@@ -2,11 +2,7 @@
 
 import { GameCanvas, type SessionFinish } from "@/components/GameCanvas";
 import { DEFAULT_MAP } from "@/lib/mapConfig";
-import {
-  createGuestToken,
-  parsePlayerToken,
-  type PlayerToken,
-} from "@/lib/playerToken";
+import { createNewToken, parsePlayerToken, type PlayerToken } from "@/lib/playerToken";
 import {
   clearSessionProfile,
   readSessionProfile,
@@ -15,9 +11,12 @@ import {
 import { decodeTokenPayload, encodeTokenPayload } from "@/lib/tokenCodec";
 import { DEFAULT_TRIANGLE_WEAPON } from "@/lib/weaponConfig";
 import type { AiPersonalityPreset } from "@locket/ai-brain";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { pickOpponent } from "@locket/matching";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 
-type Phase = "token" | "lobby" | "play" | "ended";
+type Phase = "token" | "play" | "ended";
+
+const TOKEN_DOWNLOAD_NAME = "me.sluggr";
 
 function applySessionResult(token: PlayerToken, finish: SessionFinish): PlayerToken {
   const next = { ...token, record: { ...token.record } };
@@ -27,22 +26,43 @@ function applySessionResult(token: PlayerToken, finish: SessionFinish): PlayerTo
   return next;
 }
 
-function downloadEncodedToken(token: PlayerToken, filename: string) {
+function downloadEncodedToken(token: PlayerToken) {
   const encoded = encodeTokenPayload(token);
   const blob = new Blob([encoded], { type: "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename;
+  a.download = TOKEN_DOWNLOAD_NAME;
   a.click();
   URL.revokeObjectURL(url);
 }
+
+const squareBtn: CSSProperties = {
+  width: "min(10vw, 10vh)",
+  height: "min(10vw, 10vh)",
+  minWidth: 140,
+  minHeight: 140,
+  maxWidth: 220,
+  maxHeight: 220,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  textAlign: "center",
+  padding: 12,
+  borderRadius: 4,
+  cursor: "pointer",
+  fontWeight: 600,
+  fontSize: "clamp(0.85rem, 2vmin, 1rem)",
+  lineHeight: 1.25,
+  border: "2px solid var(--accent-dark)",
+  boxShadow: "0 2px 0 rgba(30, 42, 34, 0.12)",
+};
 
 export default function HomePage() {
   const [phase, setPhase] = useState<Phase>("token");
   const [profile, setProfile] = useState<PlayerToken | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const [difficulty, setDifficulty] = useState<AiPersonalityPreset>("medium");
+  const [aiPreset, setAiPreset] = useState<AiPersonalityPreset>("medium");
   const [lastFinish, setLastFinish] = useState<SessionFinish | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
 
@@ -51,11 +71,16 @@ export default function HomePage() {
 
   useEffect(() => {
     const existing = readSessionProfile();
-    if (existing) {
-      setProfile(existing);
-      setPhase("lobby");
-    }
+    if (existing) setProfile(existing);
     setHydrated(true);
+  }, []);
+
+  const beginMatch = useCallback(() => {
+    const match = pickOpponent();
+    if (match.source === "ai_training") {
+      setAiPreset(match.preset);
+      setPhase("play");
+    }
   }, []);
 
   const onPickTokenFile = useCallback(
@@ -81,37 +106,42 @@ export default function HomePage() {
       }
       writeSessionProfile(parsed);
       setProfile(parsed);
-      setPhase("lobby");
+      const match = pickOpponent();
+      if (match.source === "ai_training") {
+        setAiPreset(match.preset);
+        setPhase("play");
+      }
     },
     []
   );
 
-  const onUseGuest = useCallback(() => {
-    const g = createGuestToken();
-    writeSessionProfile(g);
-    setProfile(g);
-    setPhase("lobby");
+  const onCreateNewToken = useCallback(() => {
+    setTokenError(null);
+    const t = createNewToken();
+    writeSessionProfile(t);
+    setProfile(t);
+    const match = pickOpponent();
+    if (match.source === "ai_training") {
+      setAiPreset(match.preset);
+      setPhase("play");
+    }
   }, []);
 
-  const onSessionEnd = useCallback(
-    (finish: SessionFinish) => {
-      setLastFinish(finish);
-      const current = readSessionProfile();
-      if (current) {
-        const updated = applySessionResult(current, finish);
-        writeSessionProfile(updated);
-        setProfile(updated);
-        downloadEncodedToken(updated, `locket-token-${updated.id.slice(0, 8)}.txt`);
-      }
-      setPhase("ended");
-    },
-    []
-  );
+  const onSessionEnd = useCallback((finish: SessionFinish) => {
+    setLastFinish(finish);
+    const current = readSessionProfile();
+    if (current) {
+      const updated = applySessionResult(current, finish);
+      writeSessionProfile(updated);
+      setProfile(updated);
+      downloadEncodedToken(updated);
+    }
+    setPhase("ended");
+  }, []);
 
-  const startMatch = () => setPhase("play");
-  const backToLobby = () => {
+  const backAfterEnd = () => {
     setLastFinish(null);
-    setPhase("lobby");
+    setPhase("token");
   };
 
   const signOut = () => {
@@ -147,124 +177,119 @@ export default function HomePage() {
           alignItems: "center",
           justifyContent: "center",
           padding: 24,
-          gap: 20,
-          maxWidth: 480,
-          margin: "0 auto",
+          gap: 28,
         }}
       >
-        <h1 style={{ fontSize: "1.5rem", fontWeight: 600, margin: 0 }}>Locket</h1>
-        <p style={{ margin: 0, color: "var(--muted)", textAlign: "center", lineHeight: 1.5 }}>
-          Upload your player token to start. The session keeps a copy in this browser only.
-          When the run ends, an encoded token file downloads automatically.
-        </p>
-        <label
+        <h1
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "12px 20px",
-            background: "#1a1a1a",
-            color: "#faf7f2",
-            borderRadius: 8,
-            cursor: "pointer",
-            fontWeight: 500,
+            fontSize: "clamp(1.75rem, 5vmin, 2.5rem)",
+            fontWeight: 700,
+            margin: 0,
+            letterSpacing: "-0.02em",
+            color: "var(--accent-dark)",
           }}
         >
-          <input
-            type="file"
-            accept=".txt,.json,text/*,application/json"
-            style={{ display: "none" }}
-            onChange={(e) => onPickTokenFile(e.target.files?.[0] ?? null)}
-          />
-          Upload token file
-        </label>
-        <button
-          type="button"
-          onClick={onUseGuest}
+          sluggr
+        </h1>
+        <p
           style={{
-            background: "transparent",
-            border: "1px solid #c4bdb4",
-            padding: "10px 18px",
-            borderRadius: 8,
-            cursor: "pointer",
+            margin: 0,
             color: "var(--muted)",
+            textAlign: "center",
+            lineHeight: 1.55,
+            maxWidth: 420,
+            fontSize: "0.95rem",
           }}
         >
-          Continue without file (guest token)
-        </button>
+          Upload your player token or create a new one. This browser keeps a session copy only.
+          When a run ends, your updated token downloads as{" "}
+          <code style={{ fontSize: "0.88em", color: "var(--ink)" }}>{TOKEN_DOWNLOAD_NAME}</code>.
+        </p>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: "clamp(16px, 4vmin, 36px)",
+            flexWrap: "wrap",
+          }}
+        >
+          <label
+            style={{
+              ...squareBtn,
+              background: "var(--accent)",
+              color: "#f6faf7",
+            }}
+          >
+            <input
+              type="file"
+              accept=".sluggr,.json,.txt,text/*,application/json,application/octet-stream"
+              style={{ display: "none" }}
+              onChange={(e) => onPickTokenFile(e.target.files?.[0] ?? null)}
+            />
+            Upload
+            <br />
+            token
+          </label>
+          <button
+            type="button"
+            onClick={onCreateNewToken}
+            style={{
+              ...squareBtn,
+              background: "var(--panel)",
+              color: "var(--accent-dark)",
+            }}
+          >
+            Create
+            <br />
+            new token
+          </button>
+        </div>
+        {profile ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>
+              Saved token · {profile.id.slice(0, 8)}…
+            </p>
+            <button
+              type="button"
+              onClick={beginMatch}
+              style={{
+                padding: "12px 32px",
+                borderRadius: 4,
+                border: "2px solid var(--accent-dark)",
+                background: "var(--accent-dark)",
+                color: "#f6faf7",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Enter arena
+            </button>
+          </div>
+        ) : null}
         {tokenError ? (
-          <p style={{ margin: 0, color: "#a33" }} role="alert">
+          <p style={{ margin: 0, color: "#b44" }} role="alert">
             {tokenError}
           </p>
         ) : null}
-      </main>
-    );
-  }
-
-  if (phase === "lobby" && profile) {
-    return (
-      <main
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 24,
-          gap: 16,
-        }}
-      >
-        <p style={{ margin: 0, color: "var(--muted)" }}>Token id · {profile.id}</p>
-        <h2 style={{ margin: 0, fontSize: "1.15rem" }}>AI difficulty</h2>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-          {(["easy", "medium", "hard"] as const).map((d) => (
-            <button
-              key={d}
-              type="button"
-              onClick={() => setDifficulty(d)}
-              style={{
-                padding: "8px 16px",
-                borderRadius: 8,
-                border: difficulty === d ? "2px solid #1a1a1a" : "1px solid #c4bdb4",
-                background: difficulty === d ? "#eae6df" : "transparent",
-                cursor: "pointer",
-                textTransform: "capitalize",
-              }}
-            >
-              {d}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={startMatch}
-          style={{
-            marginTop: 8,
-            padding: "12px 28px",
-            borderRadius: 8,
-            border: "none",
-            background: "#1a1a1a",
-            color: "#faf7f2",
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          Enter arena
-        </button>
-        <button
-          type="button"
-          onClick={signOut}
-          style={{
-            marginTop: 24,
-            background: "none",
-            border: "none",
-            color: "var(--muted)",
-            textDecoration: "underline",
-            cursor: "pointer",
-          }}
-        >
-          Clear session / upload different token
-        </button>
+        {profile ? (
+          <button
+            type="button"
+            onClick={signOut}
+            style={{
+              marginTop: 8,
+              background: "none",
+              border: "none",
+              color: "var(--muted)",
+              textDecoration: "underline",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            Clear saved token
+          </button>
+        ) : null}
       </main>
     );
   }
@@ -276,7 +301,7 @@ export default function HomePage() {
           <GameCanvas
             mapConfig={mapConfig}
             weaponConfig={weaponConfig}
-            aiPreset={difficulty}
+            aiPreset={aiPreset}
             onSessionEnd={onSessionEnd}
           />
         </div>
@@ -287,7 +312,8 @@ export default function HomePage() {
             fontSize: 13,
             color: "var(--muted)",
             textAlign: "center",
-            borderTop: "1px solid #e8e2d8",
+            borderTop: "1px solid var(--stroke)",
+            background: "var(--panel)",
           }}
         >
           WASD move · Space jump · Click lunge · 10:00 limit · Tip hits deal damage
@@ -302,7 +328,7 @@ export default function HomePage() {
         ? "Draw — equal health at time."
         : lastFinish.winner === "player"
           ? "You win."
-          : "AI wins.";
+          : "You lose.";
     return (
       <main
         style={{
@@ -313,27 +339,30 @@ export default function HomePage() {
           justifyContent: "center",
           padding: 24,
           gap: 12,
+          background: "var(--page-bg)",
         }}
       >
-        <h2 style={{ margin: 0 }}>Session over</h2>
+        <h2 style={{ margin: 0, color: "var(--accent-dark)" }}>Run over</h2>
         <p style={{ margin: 0 }}>{msg}</p>
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>
-          Record · {profile.record.wins}W / {profile.record.losses}L · Updated token downloaded
+          Record · {profile.record.wins}W / {profile.record.losses}L · Saved{" "}
+          <code>{TOKEN_DOWNLOAD_NAME}</code>
         </p>
         <button
           type="button"
-          onClick={backToLobby}
+          onClick={backAfterEnd}
           style={{
             marginTop: 12,
             padding: "10px 22px",
-            borderRadius: 8,
+            borderRadius: 4,
             border: "none",
-            background: "#1a1a1a",
-            color: "#faf7f2",
+            background: "var(--accent-dark)",
+            color: "#f6faf7",
             cursor: "pointer",
+            fontWeight: 600,
           }}
         >
-          Back to lobby
+          Back
         </button>
       </main>
     );

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@locket/ai-brain": "*",
+    "@locket/matching": "*",
     "@locket/physics-engine": "*",
     "next": "^15.1.0",
     "react": "^19.0.0",

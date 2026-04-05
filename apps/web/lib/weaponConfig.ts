@@ -16,9 +16,9 @@ export type LungeWeaponConfig = {
 
 export const DEFAULT_TRIANGLE_WEAPON: LungeWeaponConfig = {
   type: "lunge",
-  moveForce: 0.00022,
-  jumpImpulse: 0.018,
-  lungeImpulse: 0.00055,
+  moveForce: 0.00115,
+  jumpImpulse: 0.052,
+  lungeImpulse: 0.0024,
   lungeDurationMs: 220,
   cooldownMs: 650,
   hitRadius: 36,

@@ -12,7 +12,7 @@ import type { LungeWeaponConfig } from "@/lib/weaponConfig";
 
 type PhysBody = {
   id: string;
-  label: "player" | "ai" | "floor";
+  label: "player" | "ai" | "floor" | "shield";
   x: number;
   y: number;
   angle: number;
@@ -102,6 +102,8 @@ export function GameCanvas({
       triangleRadius: mapConfig.triangleRadius,
       player: { x: -140, y: 40, angle: 0 },
       ai: { x: 140, y: -30, angle: Math.PI },
+      shields: mapConfig.shields,
+      frictionAir: 0.055,
     });
 
     let playerHp = MAX_HP;
@@ -336,7 +338,7 @@ export function GameCanvas({
       });
 
       ctx.save();
-      ctx.strokeStyle = "rgba(0,0,0,0.06)";
+      ctx.strokeStyle = "rgba(45, 107, 74, 0.08)";
       ctx.lineWidth = 1;
       const g = 40 * scale;
       for (let gx = -mapConfig.halfWidth; gx <= mapConfig.halfWidth; gx += g / scale) {
@@ -372,9 +374,27 @@ export function GameCanvas({
         ctx.stroke();
       };
 
+      const drawShield = (b: PhysBody) => {
+        ctx.beginPath();
+        const vs = b.vertices.map((v) => toS(v.x, v.y));
+        if (vs.length) {
+          ctx.moveTo(vs[0].x, vs[0].y);
+          for (let i = 1; i < vs.length; i++) ctx.lineTo(vs[i].x, vs[i].y);
+          ctx.closePath();
+        }
+        ctx.fillStyle = "#b8c9b8";
+        ctx.strokeStyle = "#7a9a84";
+        ctx.lineWidth = 2;
+        ctx.fill();
+        ctx.stroke();
+      };
+
       for (const b of after) {
-        if (b.label === "player") drawTri(b, "#2c6e5e", "#1a4036");
-        else if (b.label === "ai") drawTri(b, "#5c6470", "#2e3238");
+        if (b.label === "shield") drawShield(b);
+      }
+      for (const b of after) {
+        if (b.label === "player") drawTri(b, "#2f7a55", "#1e4a32");
+        else if (b.label === "ai") drawTri(b, "#5a6d62", "#2c3830");
       }
 
       const seg = 10;
@@ -385,12 +405,12 @@ export function GameCanvas({
 
       for (let i = 0; i < MAX_HP; i++) {
         const x = margin + i * (seg + gap);
-        ctx.fillStyle = i < playerHp ? "#3d7a5c" : "#d8d2c8";
+        ctx.fillStyle = i < playerHp ? "#4a9d6f" : "#c5d4c8";
         ctx.fillRect(x, bottomY, seg, barH);
       }
       for (let i = 0; i < MAX_HP; i++) {
         const x = w - margin - seg - i * (seg + gap);
-        ctx.fillStyle = i < aiHp ? "#3d7a5c" : "#d8d2c8";
+        ctx.fillStyle = i < aiHp ? "#4a9d6f" : "#c5d4c8";
         ctx.fillRect(x, bottomY, seg, barH);
       }
 

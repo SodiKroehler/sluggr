@@ -2,7 +2,7 @@ import Matter from "matter-js";
 
 type SimulationBody = {
   id: string;
-  label: "player" | "ai" | "floor";
+  label: "player" | "ai" | "floor" | "shield";
   x: number;
   y: number;
   angle: number;
@@ -11,12 +11,22 @@ type SimulationBody = {
   vertices: { x: number; y: number }[];
 };
 
+type ShieldSpec = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  angle?: number;
+};
+
 type SimulationConfig = {
   halfWidth: number;
   halfHeight: number;
   triangleRadius: number;
   player: { x: number; y: number; angle: number };
   ai: { x: number; y: number; angle: number };
+  /** Dynamic rectangles (e.g. shovable shields). */
+  shields?: ShieldSpec[];
   frictionAir?: number;
 };
 
@@ -100,7 +110,26 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
   );
   Matter.Body.setAngle(aiBody, config.ai.angle);
 
-  Matter.World.add(world, [floor, ceiling, left, right, player, aiBody]);
+  const shieldOpts: Matter.IChamferableBodyDefinition = {
+    frictionAir: config.frictionAir ?? 0.08,
+    friction: 0.45,
+    restitution: 0.12,
+    density: 0.012,
+    label: "shield",
+  };
+
+  const shieldBodies: Matter.Body[] = [];
+  const specs = config.shields ?? [];
+  for (let i = 0; i < specs.length; i++) {
+    const s = specs[i]!;
+    const rect = Matter.Bodies.rectangle(s.x, s.y, s.width, s.height, {
+      ...shieldOpts,
+      angle: s.angle ?? 0,
+    });
+    shieldBodies.push(rect);
+  }
+
+  Matter.World.add(world, [floor, ceiling, left, right, player, aiBody, ...shieldBodies]);
 
   const idToBody = new Map<string, Matter.Body>();
   idToBody.set("player", player);
@@ -123,6 +152,9 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       out.push(toSimulationBody(right, "floor"));
       out.push(toSimulationBody(player, "player"));
       out.push(toSimulationBody(aiBody, "ai"));
+      for (const sb of shieldBodies) {
+        out.push(toSimulationBody(sb, "shield"));
+      }
       return out;
     },
     applyForce(bodyId: string, fx: number, fy: number) {

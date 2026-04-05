@@ -57,7 +57,7 @@ export function parsePlayerToken(raw: unknown): PlayerToken | null {
   };
 }
 
-export function createGuestToken(): PlayerToken {
+export function createNewToken(): PlayerToken {
   return {
     v: 1,
     id: crypto.randomUUID(),

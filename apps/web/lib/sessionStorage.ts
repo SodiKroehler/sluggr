@@ -1,6 +1,6 @@
 import { parsePlayerToken, type PlayerToken } from "./playerToken";
 
-const KEY = "locket_session_profile_v1";
+const KEY = "sluggr_session_profile_v1";
 
 export function readSessionProfile(): PlayerToken | null {
   if (typeof window === "undefined") return null;
