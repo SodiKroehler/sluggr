@@ -92,6 +92,7 @@ export function GameCanvas({
   const jumpConsumedRef = useRef(false);
   const knifeTriggerRef = useRef(false);
   const mouseScreenRef = useRef({ x: 0, y: 0 });
+  const pendingPlaceRef = useRef<{ sx: number; sy: number } | null>(null);
   const aiAttackHeldRef = useRef(false);
 
   const finishOnce = useCallback(
@@ -170,6 +171,16 @@ export function GameCanvas({
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0) knifeTriggerRef.current = true;
     };
+    const onCanvasMouseDown = (e: MouseEvent) => {
+      if (e.button === 2) {
+        e.preventDefault();
+        const rect = canvasHost.getBoundingClientRect();
+        pendingPlaceRef.current = {
+          sx: e.clientX - rect.left,
+          sy: e.clientY - rect.top,
+        };
+      }
+    };
     const onMouseMove = (e: MouseEvent) => {
       const rect = canvasHost.getBoundingClientRect();
       mouseScreenRef.current = {
@@ -177,11 +188,16 @@ export function GameCanvas({
         y: e.clientY - rect.top,
       };
     };
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
 
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mousemove", onMouseMove);
+    canvasHost.addEventListener("mousedown", onCanvasMouseDown);
+    canvasHost.addEventListener("contextmenu", onContextMenu);
 
     const resize = () => {
       const parent = canvasHost.parentElement;
@@ -229,6 +245,14 @@ export function GameCanvas({
         x: (ms.x - cx) / scale,
         y: (ms.y - cy) / scale,
       };
+
+      const pp = pendingPlaceRef.current;
+      if (pp) {
+        pendingPlaceRef.current = null;
+        const pwx = (pp.sx - cx) / scale;
+        const pwy = (pp.sy - cy) / scale;
+        sim.placeCube(pwx, pwy, mapConfig.placeCubeSize);
+      }
 
       const playerKnifeOut = now < playerKnifeUntil;
 
@@ -613,6 +637,8 @@ export function GameCanvas({
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mousemove", onMouseMove);
+      canvasHost.removeEventListener("mousedown", onCanvasMouseDown);
+      canvasHost.removeEventListener("contextmenu", onContextMenu);
       ro.disconnect();
       sim.destroy();
     };

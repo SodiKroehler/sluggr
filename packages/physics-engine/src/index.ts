@@ -22,7 +22,6 @@ type ShieldSpec = {
 type SimulationConfig = {
   halfWidth: number;
   halfHeight: number;
-  /** Edge length of the player / AI square. */
   squareSize: number;
   player: { x: number; y: number; angle: number };
   ai: { x: number; y: number; angle: number };
@@ -36,6 +35,8 @@ type SimulationApi = {
   applyForce: (bodyId: string, fx: number, fy: number) => void;
   setAngularVelocity: (bodyId: string, w: number) => void;
   setAngle: (bodyId: string, angle: number) => void;
+  /** Dynamic cube (player-placed wall block), centered at (x,y). */
+  placeCube: (x: number, y: number, side: number) => void;
   destroy: () => void;
 };
 
@@ -112,7 +113,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
   );
   Matter.Body.setAngle(aiBody, config.ai.angle);
 
-  const shieldOpts: Matter.IChamferableBodyDefinition = {
+  const blockOpts: Matter.IChamferableBodyDefinition = {
     frictionAir: config.frictionAir ?? 0.025,
     friction: 0.18,
     restitution: 0.38,
@@ -120,18 +121,19 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
     label: "shield",
   };
 
-  const shieldBodies: Matter.Body[] = [];
+  const blockBodies: Matter.Body[] = [];
   const specs = config.shields ?? [];
   for (let i = 0; i < specs.length; i++) {
     const s = specs[i]!;
-    const rect = Matter.Bodies.rectangle(s.x, s.y, s.width, s.height, {
-      ...shieldOpts,
-      angle: s.angle ?? 0,
-    });
-    shieldBodies.push(rect);
+    blockBodies.push(
+      Matter.Bodies.rectangle(s.x, s.y, s.width, s.height, {
+        ...blockOpts,
+        angle: s.angle ?? 0,
+      })
+    );
   }
 
-  Matter.World.add(world, [floor, ceiling, left, right, player, aiBody, ...shieldBodies]);
+  Matter.World.add(world, [floor, ceiling, left, right, player, aiBody, ...blockBodies]);
 
   const idToBody = new Map<string, Matter.Body>();
   idToBody.set("player", player);
@@ -154,8 +156,8 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       out.push(toSimulationBody(right, "floor"));
       out.push(toSimulationBody(player, "player"));
       out.push(toSimulationBody(aiBody, "ai"));
-      for (const sb of shieldBodies) {
-        out.push(toSimulationBody(sb, "shield"));
+      for (const bb of blockBodies) {
+        out.push(toSimulationBody(bb, "shield"));
       }
       return out;
     },
@@ -177,6 +179,18 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       if (!b) return;
       Matter.Body.setAngle(b, angle);
       Matter.Body.setAngularVelocity(b, 0);
+    },
+    placeCube(x: number, y: number, side: number) {
+      if (destroyed) return;
+      const half = side / 2;
+      const clampedX = Math.max(-hw + half + 2, Math.min(hw - half - 2, x));
+      const clampedY = Math.max(-hh + half + 2, Math.min(hh - half - 2, y));
+      const cube = Matter.Bodies.rectangle(clampedX, clampedY, side, side, {
+        ...blockOpts,
+        angle: 0,
+      });
+      blockBodies.push(cube);
+      Matter.World.add(world, cube);
     },
     destroy() {
       if (destroyed) return;

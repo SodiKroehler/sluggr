@@ -9,8 +9,17 @@ interface OpenFilePickerOptions {
   multiple?: boolean;
 }
 
+interface SaveFilePickerOptions {
+  suggestedName?: string;
+  types?: FilePickerAcceptType[];
+  excludeAcceptAllOption?: boolean;
+}
+
 interface Window {
   showOpenFilePicker?: (
     options?: OpenFilePickerOptions
   ) => Promise<FileSystemFileHandle[]>;
+  showSaveFilePicker?: (
+    options?: SaveFilePickerOptions
+  ) => Promise<FileSystemFileHandle>;
 }

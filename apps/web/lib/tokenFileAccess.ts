@@ -100,6 +100,20 @@ export function supportsFileSystemAccess(): boolean {
   return typeof window !== "undefined" && typeof window.showOpenFilePicker === "function";
 }
 
+export function supportsSaveFilePicker(): boolean {
+  return typeof window !== "undefined" && typeof window.showSaveFilePicker === "function";
+}
+
+export async function pickSaveTokenFileHandle(): Promise<FileSystemFileHandle> {
+  const picker = window.showSaveFilePicker;
+  if (!picker) throw new Error("Save picker unavailable");
+  return picker.call(window, {
+    suggestedName: "me.sluggr",
+    types: PICKER_TYPES,
+    excludeAcceptAllOption: false,
+  });
+}
+
 export async function pickTokenFileWithPicker(): Promise<FileSystemFileHandle> {
   const picker = window.showOpenFilePicker;
   if (!picker) throw new Error("File System Access API unavailable");

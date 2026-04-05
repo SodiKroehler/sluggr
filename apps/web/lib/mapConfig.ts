@@ -1,4 +1,4 @@
-/** Additive map descriptor; v1 uses a single arena with shovable shields. */
+/** Additive map descriptor; optional static shields + player-placed cubes. */
 export type ShieldPlacement = {
   x: number;
   y: number;
@@ -23,6 +23,7 @@ export type MapConfig = {
   squareSize: number;
   shields: ShieldPlacement[];
   damageZone: DamageZone | null;
+  placeCubeSize: number;
 };
 
 export const DEFAULT_MAP: MapConfig = {
@@ -31,9 +32,8 @@ export const DEFAULT_MAP: MapConfig = {
   halfHeight: 320,
   floorColor: "#e8eee8",
   squareSize: 34,
-  shields: [
-    { x: -150, y: 0, width: 26, height: 96, angle: 0 },
-    { x: 150, y: 0, width: 26, height: 96, angle: 0 },
-  ],
+  shields: [],
   damageZone: { x: 0, y: 0, halfWidth: 22, halfHeight: 18 },
+  /** Player-placed wall cubes (right-click). */
+  placeCubeSize: 30,
 };
