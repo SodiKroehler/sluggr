@@ -19,10 +19,10 @@ export type GameSnapshot = {
   selfHp: number;
   opponentHp: number;
   timeLeftSec: number;
-  /** True while local player lunge attack is active (for hard AI punish). */
-  opponentIsLunging: boolean;
-  /** Seconds since opponent lunge ended (0 if still lunging or never). */
-  opponentLungeRecoverySec: number;
+  /** True while human's knife swing is active (hard AI dodge / punish). */
+  opponentKnifeExtended: boolean;
+  /** Seconds since human knife swing ended. */
+  opponentKnifeRecoverySec: number;
 };
 
 export type AiIntent = {
@@ -115,18 +115,17 @@ export function decideAiAction(
     };
   }
 
-  // hard: track aim, punish whiffed lunges
   const aimScore = dot(forward, dirToOpp);
   let mx = dirToOpp.x * 0.95;
   let my = dirToOpp.y * 0.95;
-  if (snapshot.opponentIsLunging && aimScore < 0.25) {
+  if (snapshot.opponentKnifeExtended && aimScore < 0.25) {
     const perp = { x: -dirToOpp.y, y: dirToOpp.x };
     const dodge = snapshot.tick % 2 === 0 ? 1 : -1;
     mx = clamp(perp.x * dodge, -1, 1);
     my = clamp(perp.y * dodge, -1, 1);
   } else if (
-    snapshot.opponentLungeRecoverySec > 0 &&
-    snapshot.opponentLungeRecoverySec < 0.45 &&
+    snapshot.opponentKnifeRecoverySec > 0 &&
+    snapshot.opponentKnifeRecoverySec < 0.45 &&
     dist < 280
   ) {
     mx = dirToOpp.x;
@@ -141,8 +140,8 @@ export function decideAiAction(
   my = clamp(my, -1, 1);
 
   const punishWindow =
-    snapshot.opponentLungeRecoverySec > 0.05 &&
-    snapshot.opponentLungeRecoverySec < 0.35;
+    snapshot.opponentKnifeRecoverySec > 0.05 &&
+    snapshot.opponentKnifeRecoverySec < 0.35;
   const attack =
     (dist < 200 && aimScore > 0.75) || (punishWindow && dist < 240);
 
@@ -150,7 +149,7 @@ export function decideAiAction(
     moveX: mx,
     moveY: my,
     jump:
-      snapshot.opponentIsLunging &&
+      snapshot.opponentKnifeExtended &&
       dist < 200 &&
       aimScore > 0.4 &&
       snapshot.tick % 3 === 0,

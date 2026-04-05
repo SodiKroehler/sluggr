@@ -9,7 +9,7 @@ import {
   writeSessionProfile,
 } from "@/lib/sessionStorage";
 import { decodeTokenPayload, encodeTokenPayload } from "@/lib/tokenCodec";
-import { DEFAULT_TRIANGLE_WEAPON } from "@/lib/weaponConfig";
+import { DEFAULT_COMBAT } from "@/lib/weaponConfig";
 import type { AiPersonalityPreset } from "@locket/ai-brain";
 import { pickOpponent } from "@locket/matching";
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
@@ -67,7 +67,7 @@ export default function HomePage() {
   const [tokenError, setTokenError] = useState<string | null>(null);
 
   const mapConfig = useMemo(() => ({ ...DEFAULT_MAP }), []);
-  const weaponConfig = useMemo(() => ({ ...DEFAULT_TRIANGLE_WEAPON }), []);
+  const weaponConfig = useMemo(() => ({ ...DEFAULT_COMBAT }), []);
 
   useEffect(() => {
     const existing = readSessionProfile();
@@ -316,7 +316,7 @@ export default function HomePage() {
             background: "var(--panel)",
           }}
         >
-          WASD move · Space jump · Click lunge · 10:00 limit · Tip hits deal damage
+          WASD move · Space jump toward cursor · Click knife · R rotate (hold) · Hazard zone
         </p>
       </div>
     );

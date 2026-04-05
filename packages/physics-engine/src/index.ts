@@ -22,10 +22,10 @@ type ShieldSpec = {
 type SimulationConfig = {
   halfWidth: number;
   halfHeight: number;
-  triangleRadius: number;
+  /** Edge length of the player / AI square. */
+  squareSize: number;
   player: { x: number; y: number; angle: number };
   ai: { x: number; y: number; angle: number };
-  /** Dynamic rectangles (e.g. shovable shields). */
   shields?: ShieldSpec[];
   frictionAir?: number;
 };
@@ -34,6 +34,7 @@ type SimulationApi = {
   step: (deltaMs: number) => void;
   getBodies: () => SimulationBody[];
   applyForce: (bodyId: string, fx: number, fy: number) => void;
+  setAngularVelocity: (bodyId: string, w: number) => void;
   destroy: () => void;
 };
 
@@ -66,8 +67,8 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
   const thick = 80;
   const wallOpts: Matter.IChamferableBodyDefinition = {
     isStatic: true,
-    friction: 0.4,
-    restitution: 0.2,
+    friction: 0.12,
+    restitution: 0.45,
     label: "floor",
   };
 
@@ -84,37 +85,37 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
     ...wallOpts,
   });
 
-  const triR = config.triangleRadius;
-  const triOpts: Matter.IChamferableBodyDefinition = {
-    frictionAir: config.frictionAir ?? 0.12,
-    friction: 0.2,
-    restitution: 0.15,
-    density: 0.004,
+  const side = config.squareSize;
+  const actorOpts: Matter.IChamferableBodyDefinition = {
+    frictionAir: config.frictionAir ?? 0.018,
+    friction: 0.06,
+    restitution: 0.62,
+    density: 0.0035,
   };
 
-  const player = Matter.Bodies.polygon(
+  const player = Matter.Bodies.rectangle(
     config.player.x,
     config.player.y,
-    3,
-    triR,
-    { ...triOpts, label: "player" }
+    side,
+    side,
+    { ...actorOpts, label: "player" }
   );
   Matter.Body.setAngle(player, config.player.angle);
 
-  const aiBody = Matter.Bodies.polygon(
+  const aiBody = Matter.Bodies.rectangle(
     config.ai.x,
     config.ai.y,
-    3,
-    triR,
-    { ...triOpts, label: "ai" }
+    side,
+    side,
+    { ...actorOpts, label: "ai" }
   );
   Matter.Body.setAngle(aiBody, config.ai.angle);
 
   const shieldOpts: Matter.IChamferableBodyDefinition = {
-    frictionAir: config.frictionAir ?? 0.08,
-    friction: 0.45,
-    restitution: 0.12,
-    density: 0.012,
+    frictionAir: config.frictionAir ?? 0.025,
+    friction: 0.18,
+    restitution: 0.38,
+    density: 0.01,
     label: "shield",
   };
 
@@ -162,6 +163,12 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       const b = idToBody.get(bodyId);
       if (!b) return;
       Matter.Body.applyForce(b, b.position, { x: fx, y: fy });
+    },
+    setAngularVelocity(bodyId: string, w: number) {
+      if (destroyed) return;
+      const b = idToBody.get(bodyId);
+      if (!b) return;
+      Matter.Body.setAngularVelocity(b, w);
     },
     destroy() {
       if (destroyed) return;

@@ -7,13 +7,22 @@ export type ShieldPlacement = {
   angle?: number;
 };
 
+/** Axis-aligned hazard in world space; damage rules handled in game layer. */
+export type DamageZone = {
+  x: number;
+  y: number;
+  halfWidth: number;
+  halfHeight: number;
+};
+
 export type MapConfig = {
   id: string;
   halfWidth: number;
   halfHeight: number;
   floorColor: string;
-  triangleRadius: number;
+  squareSize: number;
   shields: ShieldPlacement[];
+  damageZone: DamageZone | null;
 };
 
 export const DEFAULT_MAP: MapConfig = {
@@ -21,9 +30,10 @@ export const DEFAULT_MAP: MapConfig = {
   halfWidth: 520,
   halfHeight: 320,
   floorColor: "#e8eee8",
-  triangleRadius: 28,
+  squareSize: 34,
   shields: [
     { x: -150, y: 0, width: 26, height: 96, angle: 0 },
     { x: 150, y: 0, width: 26, height: 96, angle: 0 },
   ],
+  damageZone: { x: 0, y: 0, halfWidth: 22, halfHeight: 18 },
 };

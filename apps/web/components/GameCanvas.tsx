@@ -7,8 +7,9 @@ import {
   type GameSnapshot,
 } from "@locket/ai-brain";
 import { useCallback, useEffect, useRef } from "react";
+import { SESSION_DURATION_MS } from "@/lib/gameConstants";
 import type { MapConfig } from "@/lib/mapConfig";
-import type { LungeWeaponConfig } from "@/lib/weaponConfig";
+import type { CombatConfig } from "@/lib/weaponConfig";
 
 type PhysBody = {
   id: string;
@@ -22,27 +23,49 @@ type PhysBody = {
 };
 
 const MAX_HP = 10;
-const SESSION_MS = 10 * 60 * 1000;
+const DAMAGE_ZONE_INTERVAL_MS = 5000;
 
-function tipPosition(b: PhysBody): { x: number; y: number } {
-  const fx = Math.cos(b.angle);
-  const fy = Math.sin(b.angle);
-  let best = { x: b.x, y: b.y };
-  let bestDot = -Infinity;
-  for (const v of b.vertices) {
-    const dx = v.x - b.x;
-    const dy = v.y - b.y;
-    const d = dx * fx + dy * fy;
-    if (d > bestDot) {
-      bestDot = d;
-      best = { x: v.x, y: v.y };
-    }
-  }
-  return best;
+/** Fibonacci scale for R-hold rotation (rad/s); negative = clockwise in Matter. */
+const FIB_OMEGA = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233] as const;
+
+function fibOmegaRadPerSec(holdMs: number): number {
+  const idx = Math.min(FIB_OMEGA.length - 1, Math.floor(holdMs / 90));
+  return -FIB_OMEGA[idx]! * 0.22;
 }
 
 function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function knifeTip(
+  b: PhysBody,
+  squareHalf: number,
+  bladeReach: number
+): { x: number; y: number } {
+  const fx = Math.cos(b.angle);
+  const fy = Math.sin(b.angle);
+  return {
+    x: b.x + fx * (squareHalf + bladeReach),
+    y: b.y + fy * (squareHalf + bladeReach),
+  };
+}
+
+function knifeBase(b: PhysBody, squareHalf: number): { x: number; y: number } {
+  const fx = Math.cos(b.angle);
+  const fy = Math.sin(b.angle);
+  return { x: b.x + fx * squareHalf, y: b.y + fy * squareHalf };
+}
+
+function pointInDamageZone(
+  px: number,
+  py: number,
+  map: MapConfig
+): boolean {
+  const z = map.damageZone;
+  if (!z) return false;
+  return (
+    Math.abs(px - z.x) <= z.halfWidth && Math.abs(py - z.y) <= z.halfHeight
+  );
 }
 
 export type SessionFinish = {
@@ -54,7 +77,7 @@ export type SessionFinish = {
 
 type Props = {
   mapConfig: MapConfig;
-  weaponConfig: LungeWeaponConfig;
+  weaponConfig: CombatConfig;
   aiPreset: AiPersonalityPreset;
   onSessionEnd: (result: SessionFinish) => void;
 };
@@ -73,9 +96,13 @@ export function GameCanvas({
     s: false,
     d: false,
     space: false,
+    r: false,
   });
   const jumpConsumedRef = useRef(false);
-  const attackDownRef = useRef(false);
+  const knifeTriggerRef = useRef(false);
+  const mouseScreenRef = useRef({ x: 0, y: 0 });
+  const rDownAtRef = useRef<number | null>(null);
+  const aiAttackHeldRef = useRef(false);
 
   const finishOnce = useCallback(
     (result: SessionFinish) => {
@@ -95,62 +122,87 @@ export function GameCanvas({
     if (!ctxRaw) return;
     const ctx: CanvasRenderingContext2D = ctxRaw;
 
+    const hh = mapConfig.halfHeight;
+    const inset = mapConfig.squareSize * 0.75;
+
     endedRef.current = false;
     const sim = createSimulation({
       halfWidth: mapConfig.halfWidth,
       halfHeight: mapConfig.halfHeight,
-      triangleRadius: mapConfig.triangleRadius,
-      player: { x: -140, y: 40, angle: 0 },
-      ai: { x: 140, y: -30, angle: Math.PI },
+      squareSize: mapConfig.squareSize,
+      player: { x: 0, y: -hh + inset, angle: Math.PI / 2 },
+      ai: { x: 0, y: hh - inset, angle: -Math.PI / 2 },
       shields: mapConfig.shields,
-      frictionAir: 0.055,
+      frictionAir: 0.014,
     });
+
+    const k = weaponConfig.knife;
+    const squareHalf = mapConfig.squareSize / 2;
 
     let playerHp = MAX_HP;
     let aiHp = MAX_HP;
     const sessionStart = performance.now();
-    let playerLungeUntil = 0;
-    let aiLungeUntil = 0;
-    let playerAttackReadyAt = 0;
-    let aiAttackReadyAt = 0;
-    let lastPlayerHitMark = 0;
-    let lastAiHitMark = 0;
+    let playerKnifeUntil = 0;
+    let aiKnifeUntil = 0;
+    let playerKnifeReadyAt = 0;
+    let aiKnifeReadyAt = 0;
+    let playerKnifeDealtHit = false;
+    let aiKnifeDealtHit = false;
     let tick = 0;
-    let playerWasLunging = false;
-    let playerLungeEndedAt = 0;
+    let playerWasKnife = false;
+    let playerKnifeEndedAt = 0;
+    let playerWasInDz = false;
+    let aiWasInDz = false;
+    let lastPlayerDzDamageAt = 0;
+    let lastAiDzDamageAt = 0;
     let raf = 0;
     let lastTs = performance.now();
 
     const onKeyDown = (e: KeyboardEvent) => {
-      const k = keysRef.current;
-      if (e.code === "KeyW") k.w = true;
-      if (e.code === "KeyA") k.a = true;
-      if (e.code === "KeyS") k.s = true;
-      if (e.code === "KeyD") k.d = true;
+      const keys = keysRef.current;
+      if (e.code === "KeyW") keys.w = true;
+      if (e.code === "KeyA") keys.a = true;
+      if (e.code === "KeyS") keys.s = true;
+      if (e.code === "KeyD") keys.d = true;
       if (e.code === "Space") {
         e.preventDefault();
-        k.space = true;
+        keys.space = true;
+      }
+      if (e.code === "KeyR") {
+        keys.r = true;
+        if (rDownAtRef.current === null) {
+          rDownAtRef.current = performance.now();
+        }
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      const k = keysRef.current;
-      if (e.code === "KeyW") k.w = false;
-      if (e.code === "KeyA") k.a = false;
-      if (e.code === "KeyS") k.s = false;
-      if (e.code === "KeyD") k.d = false;
-      if (e.code === "Space") k.space = false;
+      const keys = keysRef.current;
+      if (e.code === "KeyW") keys.w = false;
+      if (e.code === "KeyA") keys.a = false;
+      if (e.code === "KeyS") keys.s = false;
+      if (e.code === "KeyD") keys.d = false;
+      if (e.code === "Space") keys.space = false;
+      if (e.code === "KeyR") {
+        keys.r = false;
+        rDownAtRef.current = null;
+        sim.setAngularVelocity("player", 0);
+      }
     };
     const onMouseDown = (e: MouseEvent) => {
-      if (e.button === 0) attackDownRef.current = true;
+      if (e.button === 0) knifeTriggerRef.current = true;
     };
-    const onMouseUp = (e: MouseEvent) => {
-      if (e.button === 0) attackDownRef.current = false;
+    const onMouseMove = (e: MouseEvent) => {
+      const rect = canvasHost.getBoundingClientRect();
+      mouseScreenRef.current = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      };
     };
 
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("mousedown", onMouseDown);
-    window.addEventListener("mouseup", onMouseUp);
+    canvasHost.addEventListener("mousemove", onMouseMove);
 
     const resize = () => {
       const parent = canvasHost.parentElement;
@@ -168,30 +220,11 @@ export function GameCanvas({
     const ro = new ResizeObserver(resize);
     ro.observe(canvasHost.parentElement!);
 
-    function tryHit(
-      now: number,
-      attackerLunging: boolean,
-      tip: { x: number; y: number },
-      target: PhysBody,
-      lastMark: number,
-      markKey: "p" | "a"
-    ): number {
-      if (!attackerLunging) return lastMark;
-      if (now - lastMark < weaponConfig.cooldownMs) return lastMark;
-      const c = { x: target.x, y: target.y };
-      if (dist(tip, c) <= weaponConfig.hitRadius) {
-        if (markKey === "p") aiHp -= weaponConfig.damage;
-        else playerHp -= weaponConfig.damage;
-        return now;
-      }
-      return lastMark;
-    }
-
     function frame(ts: number) {
       if (endedRef.current) return;
       const nowWall = performance.now();
       const elapsedSession = nowWall - sessionStart;
-      const timeLeftSec = Math.max(0, (SESSION_MS - elapsedSession) / 1000);
+      const timeLeftSec = Math.max(0, (SESSION_DURATION_MS - elapsedSession) / 1000);
       const dtMs = Math.min(ts - lastTs, 32);
       lastTs = ts;
 
@@ -204,17 +237,30 @@ export function GameCanvas({
       }
 
       const now = performance.now();
-      const playerLunging = now < playerLungeUntil;
-      const aiLunging = now < aiLungeUntil;
+      const w = canvasHost.clientWidth;
+      const h = canvasHost.clientHeight;
+      const scale = Math.min(
+        w / (mapConfig.halfWidth * 2.1),
+        h / (mapConfig.halfHeight * 2.1)
+      );
+      const cx = w / 2;
+      const cy = h / 2;
+      const ms = mouseScreenRef.current;
+      const worldMouse = {
+        x: (ms.x - cx) / scale,
+        y: (ms.y - cy) / scale,
+      };
 
-      if (playerWasLunging && !playerLunging) {
-        playerLungeEndedAt = now;
+      const playerKnifeOut = now < playerKnifeUntil;
+
+      if (playerWasKnife && !playerKnifeOut) {
+        playerKnifeEndedAt = now;
       }
-      playerWasLunging = playerLunging;
+      playerWasKnife = playerKnifeOut;
 
-      const opponentLungeRecoverySec = playerLunging
+      const opponentKnifeRecoverySec = playerKnifeOut
         ? 0
-        : Math.min(2, (now - playerLungeEndedAt) / 1000);
+        : Math.min(2, (now - playerKnifeEndedAt) / 1000);
 
       const snapshot: GameSnapshot = {
         tick,
@@ -234,36 +280,59 @@ export function GameCanvas({
         selfHp: aiHp,
         opponentHp: playerHp,
         timeLeftSec,
-        opponentIsLunging: playerLunging,
-        opponentLungeRecoverySec,
+        opponentKnifeExtended: playerKnifeOut,
+        opponentKnifeRecoverySec,
       };
 
       const aiIntent = decideAiAction(snapshot, aiPreset);
 
-      const k = keysRef.current;
+      const keys = keysRef.current;
       let mx = 0;
       let my = 0;
-      if (k.w) my -= 1;
-      if (k.s) my += 1;
-      if (k.a) mx -= 1;
-      if (k.d) mx += 1;
+      if (keys.w) my -= 1;
+      if (keys.s) my += 1;
+      if (keys.a) mx -= 1;
+      if (keys.d) mx += 1;
       const mlen = Math.hypot(mx, my);
       if (mlen > 1e-6) {
         mx /= mlen;
         my /= mlen;
       }
-      sim.applyForce("player", mx * weaponConfig.moveForce, my * weaponConfig.moveForce);
+      sim.applyForce(
+        "player",
+        mx * weaponConfig.moveForce,
+        my * weaponConfig.moveForce
+      );
 
-      if (k.space && !jumpConsumedRef.current) {
-        sim.applyForce("player", 0, -weaponConfig.jumpImpulse);
+      if (keys.space && !jumpConsumedRef.current) {
+        const dx = worldMouse.x - player.x;
+        const dy = worldMouse.y - player.y;
+        const jl = Math.hypot(dx, dy);
+        let jx = 0;
+        let jy = -1;
+        if (jl > 6) {
+          jx = dx / jl;
+          jy = dy / jl;
+        }
+        sim.applyForce(
+          "player",
+          jx * weaponConfig.jumpImpulse,
+          jy * weaponConfig.jumpImpulse
+        );
         jumpConsumedRef.current = true;
       }
-      if (!k.space) jumpConsumedRef.current = false;
+      if (!keys.space) jumpConsumedRef.current = false;
 
-      if (attackDownRef.current && now >= playerAttackReadyAt && !playerLunging) {
-        playerLungeUntil = now + weaponConfig.lungeDurationMs;
-        playerAttackReadyAt = now + weaponConfig.cooldownMs;
+      if (
+        knifeTriggerRef.current &&
+        now >= playerKnifeReadyAt &&
+        now >= playerKnifeUntil
+      ) {
+        playerKnifeUntil = now + k.extendDurationMs;
+        playerKnifeReadyAt = now + k.cooldownMs;
+        playerKnifeDealtHit = false;
       }
+      knifeTriggerRef.current = false;
 
       sim.applyForce(
         "ai",
@@ -272,22 +341,31 @@ export function GameCanvas({
       );
 
       if (aiIntent.jump && tick % 14 === 0) {
-        sim.applyForce("ai", 0, -weaponConfig.jumpImpulse * 0.78);
-      }
-      if (aiIntent.attack && now >= aiAttackReadyAt && !aiLunging) {
-        aiLungeUntil = now + weaponConfig.lungeDurationMs;
-        aiAttackReadyAt = now + weaponConfig.cooldownMs;
+        const jdx = player.x - aiBody.x;
+        const jdy = player.y - aiBody.y;
+        const jl = Math.hypot(jdx, jdy);
+        if (jl > 6) {
+          sim.applyForce(
+            "ai",
+            (jdx / jl) * weaponConfig.jumpImpulse * 0.82,
+            (jdy / jl) * weaponConfig.jumpImpulse * 0.82
+          );
+        } else {
+          sim.applyForce("ai", 0, -weaponConfig.jumpImpulse * 0.82);
+        }
       }
 
-      const pf = Math.cos(player.angle);
-      const qf = Math.sin(player.angle);
-      if (playerLunging) {
-        sim.applyForce("player", pf * weaponConfig.lungeImpulse, qf * weaponConfig.lungeImpulse);
+      const aiAttackEdge = aiIntent.attack && !aiAttackHeldRef.current;
+      aiAttackHeldRef.current = aiIntent.attack;
+      if (aiAttackEdge && now >= aiKnifeReadyAt && now >= aiKnifeUntil) {
+        aiKnifeUntil = now + k.extendDurationMs;
+        aiKnifeReadyAt = now + k.cooldownMs;
+        aiKnifeDealtHit = false;
       }
-      if (aiLunging) {
-        const afx = Math.cos(aiBody.angle);
-        const afy = Math.sin(aiBody.angle);
-        sim.applyForce("ai", afx * weaponConfig.lungeImpulse, afy * weaponConfig.lungeImpulse);
+
+      if (keys.r && rDownAtRef.current !== null) {
+        const hold = now - rDownAtRef.current;
+        sim.setAngularVelocity("player", fibOmegaRadPerSec(hold));
       }
 
       sim.step(dtMs);
@@ -296,38 +374,64 @@ export function GameCanvas({
       const p2 = after.find((b) => b.label === "player");
       const a2 = after.find((b) => b.label === "ai");
       if (p2 && a2) {
-        const pTip = tipPosition(p2);
-        const aTip = tipPosition(a2);
-        const pl = performance.now() < playerLungeUntil;
-        const al = performance.now() < aiLungeUntil;
-        lastPlayerHitMark = tryHit(
-          performance.now(),
-          pl,
-          pTip,
-          a2,
-          lastPlayerHitMark,
-          "p"
-        );
-        lastAiHitMark = tryHit(
-          performance.now(),
-          al,
-          aTip,
-          p2,
-          lastAiHitMark,
-          "a"
-        );
+        const now2 = performance.now();
+        const pk = now2 < playerKnifeUntil;
+        const ak = now2 < aiKnifeUntil;
+
+        if (pk && !playerKnifeDealtHit) {
+          const tip = knifeTip(p2, squareHalf, k.extendLength);
+          if (dist(tip, { x: a2.x, y: a2.y }) <= k.tipHitRadius) {
+            aiHp -= k.damage;
+            playerKnifeDealtHit = true;
+          }
+        }
+        if (ak && !aiKnifeDealtHit) {
+          const tip = knifeTip(a2, squareHalf, k.extendLength);
+          if (dist(tip, { x: p2.x, y: p2.y }) <= k.tipHitRadius) {
+            playerHp -= k.damage;
+            aiKnifeDealtHit = true;
+          }
+        }
+
+        if (mapConfig.damageZone) {
+          const pin = pointInDamageZone(p2.x, p2.y, mapConfig);
+          if (pin && !playerWasInDz) {
+            playerHp -= 1;
+            lastPlayerDzDamageAt = now2;
+            playerWasInDz = true;
+          } else if (
+            pin &&
+            playerWasInDz &&
+            now2 - lastPlayerDzDamageAt >= DAMAGE_ZONE_INTERVAL_MS
+          ) {
+            playerHp -= 1;
+            lastPlayerDzDamageAt = now2;
+          } else if (!pin) {
+            playerWasInDz = false;
+          }
+
+          const ain = pointInDamageZone(a2.x, a2.y, mapConfig);
+          if (ain && !aiWasInDz) {
+            aiHp -= 1;
+            lastAiDzDamageAt = now2;
+            aiWasInDz = true;
+          } else if (
+            ain &&
+            aiWasInDz &&
+            now2 - lastAiDzDamageAt >= DAMAGE_ZONE_INTERVAL_MS
+          ) {
+            aiHp -= 1;
+            lastAiDzDamageAt = now2;
+          } else if (!ain) {
+            aiWasInDz = false;
+          }
+        }
       }
 
       playerHp = Math.max(0, Math.min(MAX_HP, playerHp));
       aiHp = Math.max(0, Math.min(MAX_HP, aiHp));
 
       tick += 1;
-
-      const w = canvasHost.clientWidth;
-      const h = canvasHost.clientHeight;
-      const scale = Math.min(w / (mapConfig.halfWidth * 2.1), h / (mapConfig.halfHeight * 2.1));
-      const cx = w / 2;
-      const cy = h / 2;
 
       ctx.fillStyle = mapConfig.floorColor;
       ctx.fillRect(0, 0, w, h);
@@ -336,6 +440,17 @@ export function GameCanvas({
         x: cx + x * scale,
         y: cy + y * scale,
       });
+
+      if (mapConfig.damageZone) {
+        const dz = mapConfig.damageZone;
+        const p1 = toS(dz.x - dz.halfWidth, dz.y - dz.halfHeight);
+        const p2s = toS(dz.x + dz.halfWidth, dz.y + dz.halfHeight);
+        ctx.fillStyle = "rgba(200, 72, 72, 0.22)";
+        ctx.strokeStyle = "rgba(160, 40, 40, 0.45)";
+        ctx.lineWidth = 2;
+        ctx.fillRect(p1.x, p1.y, p2s.x - p1.x, p2s.y - p1.y);
+        ctx.strokeRect(p1.x, p1.y, p2s.x - p1.x, p2s.y - p1.y);
+      }
 
       ctx.save();
       ctx.strokeStyle = "rgba(45, 107, 74, 0.08)";
@@ -359,7 +474,7 @@ export function GameCanvas({
       }
       ctx.restore();
 
-      const drawTri = (b: PhysBody, fill: string, stroke: string) => {
+      const drawSquare = (b: PhysBody, fill: string, stroke: string) => {
         ctx.beginPath();
         const vs = b.vertices.map((v) => toS(v.x, v.y));
         if (vs.length) {
@@ -371,6 +486,21 @@ export function GameCanvas({
         ctx.strokeStyle = stroke;
         ctx.lineWidth = 2;
         ctx.fill();
+        ctx.stroke();
+      };
+
+      const drawKnife = (b: PhysBody, extended: boolean) => {
+        const reach = extended ? k.extendLength : k.retractLength;
+        const tipW = knifeTip(b, squareHalf, reach);
+        const baseW = knifeBase(b, squareHalf * 0.92);
+        const t1 = toS(tipW.x, tipW.y);
+        const t0 = toS(baseW.x, baseW.y);
+        ctx.beginPath();
+        ctx.moveTo(t0.x, t0.y);
+        ctx.lineTo(t1.x, t1.y);
+        ctx.strokeStyle = extended ? "#2a2a2a" : "#4a4a4a";
+        ctx.lineWidth = extended ? 4 : 2;
+        ctx.lineCap = "round";
         ctx.stroke();
       };
 
@@ -392,9 +522,16 @@ export function GameCanvas({
       for (const b of after) {
         if (b.label === "shield") drawShield(b);
       }
+
+      const nowDraw = performance.now();
       for (const b of after) {
-        if (b.label === "player") drawTri(b, "#2f7a55", "#1e4a32");
-        else if (b.label === "ai") drawTri(b, "#5a6d62", "#2c3830");
+        if (b.label === "player") {
+          drawSquare(b, "#2f7a55", "#1e4a32");
+          drawKnife(b, nowDraw < playerKnifeUntil);
+        } else if (b.label === "ai") {
+          drawSquare(b, "#5a6d62", "#2c3830");
+          drawKnife(b, nowDraw < aiKnifeUntil);
+        }
       }
 
       const seg = 10;
@@ -419,7 +556,11 @@ export function GameCanvas({
       ctx.fillStyle = "rgba(0,0,0,0.45)";
       ctx.font = "13px system-ui, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(`${mm}:${ss.toString().padStart(2, "0")}`, w / 2, 22);
+      ctx.fillText(
+        `${mm}:${ss.toString().padStart(2, "0")}`,
+        w / 2,
+        22
+      );
 
       if (playerHp <= 0) {
         finishOnce({
@@ -439,7 +580,7 @@ export function GameCanvas({
         });
         return;
       }
-      if (elapsedSession >= SESSION_MS) {
+      if (elapsedSession >= SESSION_DURATION_MS) {
         let winner: SessionFinish["winner"] = "draw";
         if (playerHp > aiHp) winner = "player";
         else if (aiHp > playerHp) winner = "ai";
@@ -462,7 +603,7 @@ export function GameCanvas({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("mouseup", onMouseUp);
+      canvasHost.removeEventListener("mousemove", onMouseMove);
       ro.disconnect();
       sim.destroy();
     };
