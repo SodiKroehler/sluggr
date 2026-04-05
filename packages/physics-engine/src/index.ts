@@ -48,18 +48,25 @@ type SimulationApi = {
     owner: "player" | "ai"
   ) => string;
   removeBullet: (id: string) => void;
+  /** Player-placed cube: after "cure" it collides like map walls (actors + bullets). */
+  hardenPlacedCube: (bodyId: string) => void;
   destroy: () => void;
 };
 
-/** Walls/shields; bullets bounce, actors collide. */
+/** Arena walls + map shields + cured placed blocks. */
 const CAT_STATIC = 0x0001;
 /** Player / AI squares. */
 const CAT_ACTOR = 0x0002;
-/** Projectiles: collide with static only (damage vs actors handled in game). */
+/** Projectiles (game-layer damage vs actors). */
 const CAT_BULLET = 0x0008;
+/** Placed block while green / curing: bullets only, actors pass through. */
+const CAT_SOFT_BLOCK = 0x0010;
+
 const MASK_STATIC = CAT_STATIC | CAT_ACTOR | CAT_BULLET;
+/** Actors collide with hard static only — not soft curing blocks. */
 const MASK_ACTOR = CAT_STATIC | CAT_ACTOR;
-const MASK_BULLET = CAT_STATIC;
+const MASK_BULLET = CAT_STATIC | CAT_SOFT_BLOCK;
+const MASK_SOFT_BLOCK = CAT_BULLET;
 
 function toSimulationBody(
   body: Matter.Body,
@@ -141,12 +148,20 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
   );
   Matter.Body.setAngle(aiBody, config.ai.angle);
 
-  const blockOpts: Matter.IChamferableBodyDefinition = {
+  const blockOptsHard: Matter.IChamferableBodyDefinition = {
     isStatic: true,
     friction: 0.18,
     restitution: 0.38,
     label: "shield",
     collisionFilter: { category: CAT_STATIC, mask: MASK_STATIC },
+  };
+
+  const blockOptsSoft: Matter.IChamferableBodyDefinition = {
+    isStatic: true,
+    friction: 0.18,
+    restitution: 0.38,
+    label: "shield",
+    collisionFilter: { category: CAT_SOFT_BLOCK, mask: MASK_SOFT_BLOCK },
   };
 
   const blockBodies: Matter.Body[] = [];
@@ -156,7 +171,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
     const s = specs[i]!;
     blockBodies.push(
       Matter.Bodies.rectangle(s.x, s.y, s.width, s.height, {
-        ...blockOpts,
+        ...blockOptsHard,
         angle: s.angle ?? 0,
       })
     );
@@ -218,7 +233,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       const clampedX = Math.max(-hw + half + 2, Math.min(hw - half - 2, x));
       const clampedY = Math.max(-hh + half + 2, Math.min(hh - half - 2, y));
       const cube = Matter.Bodies.rectangle(clampedX, clampedY, side, side, {
-        ...blockOpts,
+        ...blockOptsSoft,
         angle: 0,
       });
       blockBodies.push(cube);
@@ -245,9 +260,20 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       (bullet as Matter.Body & { bulletOwner?: "player" | "ai" }).bulletOwner =
         owner;
       Matter.Body.setVelocity(bullet, { x: vx, y: vy });
+      Matter.Body.setAngularVelocity(bullet, 0);
+      Matter.Body.setInertia(bullet, Infinity);
       bulletBodies.push(bullet);
       Matter.World.add(world, bullet);
       return String(bullet.id);
+    },
+    hardenPlacedCube(bodyId: string) {
+      if (destroyed) return;
+      const b = blockBodies.find((bb) => String(bb.id) === bodyId);
+      if (!b) return;
+      b.collisionFilter = {
+        category: CAT_STATIC,
+        mask: MASK_STATIC,
+      };
     },
     removeBullet(id: string) {
       if (destroyed) return;

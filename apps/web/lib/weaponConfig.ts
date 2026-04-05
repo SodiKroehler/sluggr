@@ -14,7 +14,10 @@ export type CombatConfig = {
     cooldownMs: number;
     /** World units per second. */
     bulletSpeed: number;
+    /** Physics / draw radius (bounces). */
     bulletRadius: number;
+    /** Damage test radius (can be larger than physics to reduce tunneling). */
+    hitRadius: number;
     damage: number;
     /** Line extends this far past the square edge along aim (world units). */
     barrelPastEdge: number;
@@ -22,8 +25,8 @@ export type CombatConfig = {
 };
 
 export const DEFAULT_COMBAT: CombatConfig = {
-  moveForce: 0.0012,
-  jumpImpulse: 0.062,
+  moveForce: 0.00038,
+  jumpImpulse: 0.028,
   knife: {
     retractLength: 5,
     extendLength: 44,
@@ -34,8 +37,9 @@ export const DEFAULT_COMBAT: CombatConfig = {
   },
   gun: {
     cooldownMs: 280,
-    bulletSpeed: 140,
+    bulletSpeed: 72,
     bulletRadius: 3.2,
+    hitRadius: 6.5,
     damage: 1,
     barrelPastEdge: 10,
   },

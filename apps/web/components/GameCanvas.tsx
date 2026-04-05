@@ -50,6 +50,30 @@ function circleHitsRotatedSquare(
   return ex * ex + ey * ey <= br * br + 1e-4;
 }
 
+/** Swept bullet (segment) vs full square hitbox (half = half-edge of actor). */
+function segmentHitsRotatedSquare(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  br: number,
+  px: number,
+  py: number,
+  half: number,
+  angle: number
+): boolean {
+  const segLen = Math.hypot(x1 - x0, y1 - y0);
+  const spacing = Math.max(br * 0.35, 1.25);
+  const steps = Math.min(28, Math.max(1, Math.ceil(segLen / spacing)));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const bx = x0 + (x1 - x0) * t;
+    const by = y0 + (y1 - y0) * t;
+    if (circleHitsRotatedSquare(bx, by, br, px, py, half, angle)) return true;
+  }
+  return false;
+}
+
 /** Gun: line from square center through front face, `pastEdge` beyond edge; muzzle past tip for spawn. */
 function gunMuzzle(
   b: PhysBody,
@@ -193,6 +217,7 @@ export function GameCanvas({
     let raf = 0;
     let lastTs = performance.now();
     const playerPlacedBlockSpawnMs = new Map<string, number>();
+    const curedPlacedBlockIds = new Set<string>();
     let playerDamageFlashUntil = 0;
     let aiDamageFlashUntil = 0;
 
@@ -295,6 +320,16 @@ export function GameCanvas({
         const { x: gx, y: gy } = snapPlaceGridCenter(player.x, player.y, cell);
         const id = sim.placeCube(gx, gy, cell);
         if (id) playerPlacedBlockSpawnMs.set(id, nowWall);
+      }
+
+      for (const [blockId, spawn] of playerPlacedBlockSpawnMs) {
+        if (
+          !curedPlacedBlockIds.has(blockId) &&
+          nowWall - spawn >= PLACED_BLOCK_COLOR_MS
+        ) {
+          sim.hardenPlacedCube(blockId);
+          curedPlacedBlockIds.add(blockId);
+        }
       }
 
       const snapshot: GameSnapshot = {
@@ -433,6 +468,13 @@ export function GameCanvas({
         if (id) aiGunReadyAt = now + gcfg.cooldownMs;
       }
 
+      const bulletPosBeforeStep = new Map<string, { x: number; y: number }>();
+      for (const b of sim.getBodies() as PhysBody[]) {
+        if (b.label === "bullet") {
+          bulletPosBeforeStep.set(b.id, { x: b.x, y: b.y });
+        }
+      }
+
       sim.step(dtMs);
 
       const after = sim.getBodies() as PhysBody[];
@@ -441,12 +483,17 @@ export function GameCanvas({
       if (p2 && a2) {
         const now2 = performance.now();
         const dmg = gcfg.damage;
-        const brHit = gcfg.bulletRadius;
+        const brHit = gcfg.hitRadius;
         for (const b of after) {
           if (b.label !== "bullet" || !b.bulletOwner) continue;
           const target = b.bulletOwner === "player" ? a2 : p2;
+          const prev = bulletPosBeforeStep.get(b.id);
+          const x0 = prev?.x ?? b.x;
+          const y0 = prev?.y ?? b.y;
           if (
-            circleHitsRotatedSquare(
+            segmentHitsRotatedSquare(
+              x0,
+              y0,
               b.x,
               b.y,
               brHit,
