@@ -10,9 +10,9 @@ import {
 } from "@/lib/sessionStorage";
 import { decodeTokenPayload, encodeTokenPayload } from "@/lib/tokenCodec";
 import { DEFAULT_COMBAT } from "@/lib/weaponConfig";
-import type { AiPersonalityPreset } from "@locket/ai-brain";
-import { pickOpponent } from "@locket/matching";
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+
+const AI_PRESET_LOCKED = "easy" as const;
 
 type Phase = "token" | "play" | "ended";
 
@@ -62,7 +62,6 @@ export default function HomePage() {
   const [phase, setPhase] = useState<Phase>("token");
   const [profile, setProfile] = useState<PlayerToken | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const [aiPreset, setAiPreset] = useState<AiPersonalityPreset>("medium");
   const [lastFinish, setLastFinish] = useState<SessionFinish | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
 
@@ -76,11 +75,7 @@ export default function HomePage() {
   }, []);
 
   const beginMatch = useCallback(() => {
-    const match = pickOpponent();
-    if (match.source === "ai_training") {
-      setAiPreset(match.preset);
-      setPhase("play");
-    }
+    setPhase("play");
   }, []);
 
   const onPickTokenFile = useCallback(
@@ -106,11 +101,7 @@ export default function HomePage() {
       }
       writeSessionProfile(parsed);
       setProfile(parsed);
-      const match = pickOpponent();
-      if (match.source === "ai_training") {
-        setAiPreset(match.preset);
-        setPhase("play");
-      }
+      setPhase("play");
     },
     []
   );
@@ -120,11 +111,7 @@ export default function HomePage() {
     const t = createNewToken();
     writeSessionProfile(t);
     setProfile(t);
-    const match = pickOpponent();
-    if (match.source === "ai_training") {
-      setAiPreset(match.preset);
-      setPhase("play");
-    }
+    setPhase("play");
   }, []);
 
   const onSessionEnd = useCallback((finish: SessionFinish) => {
@@ -139,10 +126,14 @@ export default function HomePage() {
     setPhase("ended");
   }, []);
 
-  const backAfterEnd = () => {
+  const replayMatch = useCallback(() => {
     setLastFinish(null);
-    setPhase("token");
-  };
+    setPhase("play");
+  }, []);
+
+  const saveTokenAgain = useCallback(() => {
+    if (profile) downloadEncodedToken(profile);
+  }, [profile]);
 
   const signOut = () => {
     clearSessionProfile();
@@ -301,7 +292,7 @@ export default function HomePage() {
           <GameCanvas
             mapConfig={mapConfig}
             weaponConfig={weaponConfig}
-            aiPreset={aiPreset}
+            aiPreset={AI_PRESET_LOCKED}
             onSessionEnd={onSessionEnd}
           />
         </div>
@@ -338,32 +329,63 @@ export default function HomePage() {
           alignItems: "center",
           justifyContent: "center",
           padding: 24,
-          gap: 12,
+          gap: 16,
           background: "var(--page-bg)",
         }}
       >
         <h2 style={{ margin: 0, color: "var(--accent-dark)" }}>Run over</h2>
         <p style={{ margin: 0 }}>{msg}</p>
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>
-          Record · {profile.record.wins}W / {profile.record.losses}L · Saved{" "}
-          <code>{TOKEN_DOWNLOAD_NAME}</code>
+          Record · {profile.record.wins}W / {profile.record.losses}L
         </p>
-        <button
-          type="button"
-          onClick={backAfterEnd}
+        <p style={{ margin: 0, color: "var(--muted)", fontSize: 13, maxWidth: 360, textAlign: "center", lineHeight: 1.45 }}>
+          A copy of your token may have downloaded when the run ended. Use{" "}
+          <strong>Save token</strong> if you need the file again.
+        </p>
+        <div
           style={{
-            marginTop: 12,
-            padding: "10px 22px",
-            borderRadius: 4,
-            border: "none",
-            background: "var(--accent-dark)",
-            color: "#f6faf7",
-            cursor: "pointer",
-            fontWeight: 600,
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            width: "100%",
+            maxWidth: 320,
+            marginTop: 8,
           }}
         >
-          Back
-        </button>
+          <button
+            type="button"
+            onClick={saveTokenAgain}
+            style={{
+              padding: "14px 20px",
+              borderRadius: 4,
+              border: "2px solid var(--accent-dark)",
+              background: "var(--panel)",
+              color: "var(--accent-dark)",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 15,
+              lineHeight: 1.3,
+            }}
+          >
+            Save token (this is required to play again)
+          </button>
+          <button
+            type="button"
+            onClick={replayMatch}
+            style={{
+              padding: "14px 20px",
+              borderRadius: 4,
+              border: "none",
+              background: "var(--accent-dark)",
+              color: "#f6faf7",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 15,
+            }}
+          >
+            Replay
+          </button>
+        </div>
       </main>
     );
   }

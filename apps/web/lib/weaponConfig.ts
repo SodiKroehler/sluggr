@@ -15,7 +15,7 @@ export type CombatConfig = {
 };
 
 export const DEFAULT_COMBAT: CombatConfig = {
-  moveForce: 0.0026,
+  moveForce: 0.0012,
   jumpImpulse: 0.062,
   knife: {
     retractLength: 5,

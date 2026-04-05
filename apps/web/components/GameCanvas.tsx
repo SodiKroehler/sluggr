@@ -30,7 +30,7 @@ const FIB_OMEGA = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233] as const;
 
 function fibOmegaRadPerSec(holdMs: number): number {
   const idx = Math.min(FIB_OMEGA.length - 1, Math.floor(holdMs / 90));
-  return -FIB_OMEGA[idx]! * 0.22;
+  return (-FIB_OMEGA[idx]! * 0.22) / 5;
 }
 
 function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
@@ -492,15 +492,42 @@ export function GameCanvas({
       const drawKnife = (b: PhysBody, extended: boolean) => {
         const reach = extended ? k.extendLength : k.retractLength;
         const tipW = knifeTip(b, squareHalf, reach);
-        const baseW = knifeBase(b, squareHalf * 0.92);
-        const t1 = toS(tipW.x, tipW.y);
-        const t0 = toS(baseW.x, baseW.y);
+        const baseC = knifeBase(b, squareHalf * 0.88);
+        const fx = Math.cos(b.angle);
+        const fy = Math.sin(b.angle);
+        const px = -fy;
+        const py = fx;
+        const baseHalfW = extended ? 4.2 : 2.4;
+        const tipHalfW = 0.65;
+        const bl = { x: baseC.x + px * baseHalfW, y: baseC.y + py * baseHalfW };
+        const br = { x: baseC.x - px * baseHalfW, y: baseC.y - py * baseHalfW };
+        const tl = { x: tipW.x - px * tipHalfW, y: tipW.y - py * tipHalfW };
+        const tr = { x: tipW.x + px * tipHalfW, y: tipW.y + py * tipHalfW };
+        const sbl = toS(bl.x, bl.y);
+        const sbr = toS(br.x, br.y);
+        const stl = toS(tl.x, tl.y);
+        const str = toS(tr.x, tr.y);
         ctx.beginPath();
-        ctx.moveTo(t0.x, t0.y);
-        ctx.lineTo(t1.x, t1.y);
-        ctx.strokeStyle = extended ? "#2a2a2a" : "#4a4a4a";
-        ctx.lineWidth = extended ? 4 : 2;
-        ctx.lineCap = "round";
+        ctx.moveTo(sbl.x, sbl.y);
+        ctx.lineTo(sbr.x, sbr.y);
+        ctx.lineTo(str.x, str.y);
+        ctx.lineTo(stl.x, stl.y);
+        ctx.closePath();
+        const midX = (stl.x + str.x) / 2;
+        const midY = (stl.y + str.y) / 2;
+        const g = ctx.createLinearGradient(sbl.x, sbl.y, midX, midY);
+        if (extended) {
+          g.addColorStop(0, "#6a7a72");
+          g.addColorStop(0.35, "#c8d4ce");
+          g.addColorStop(1, "#1a2220");
+        } else {
+          g.addColorStop(0, "#8a948e");
+          g.addColorStop(1, "#4a524e");
+        }
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.strokeStyle = extended ? "#141a18" : "#2e3532";
+        ctx.lineWidth = extended ? 1.5 : 1;
         ctx.stroke();
       };
 
