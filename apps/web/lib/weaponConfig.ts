@@ -16,10 +16,8 @@ export type CombatConfig = {
     bulletSpeed: number;
     bulletRadius: number;
     damage: number;
-    /** Muzzle ahead of gun base along aim (world units). */
-    muzzleForward: number;
-    /** Short barrel line length in world units. */
-    barrelLength: number;
+    /** Line extends this far past the square edge along aim (world units). */
+    barrelPastEdge: number;
   };
 };
 
@@ -36,10 +34,9 @@ export const DEFAULT_COMBAT: CombatConfig = {
   },
   gun: {
     cooldownMs: 280,
-    bulletSpeed: 520,
+    bulletSpeed: 140,
     bulletRadius: 3.2,
     damage: 1,
-    muzzleForward: 10,
-    barrelLength: 9,
+    barrelPastEdge: 10,
   },
 };

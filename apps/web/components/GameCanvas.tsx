@@ -30,24 +30,22 @@ function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-/** Gun fixed on the square's right edge (local +Y), barrel along aim (+X). */
+/** Gun: line from square center through front face, `pastEdge` beyond edge; muzzle past tip for spawn. */
 function gunMuzzle(
   b: PhysBody,
   squareHalf: number,
-  muzzleForward: number,
-  barrelLength: number
+  pastEdge: number,
+  bulletRadius: number
 ) {
   const fx = Math.cos(b.angle);
   const fy = Math.sin(b.angle);
-  const rx = -fy;
-  const ry = fx;
-  const edgeX = b.x + rx * squareHalf;
-  const edgeY = b.y + ry * squareHalf;
-  const mx = edgeX + fx * muzzleForward;
-  const my = edgeY + fy * muzzleForward;
-  const tipX = edgeX + fx * barrelLength;
-  const tipY = edgeY + fy * barrelLength;
-  return { edgeX, edgeY, tipX, tipY, mx, my, fx, fy };
+  const tipDist = squareHalf + pastEdge;
+  const tipX = b.x + fx * tipDist;
+  const tipY = b.y + fy * tipDist;
+  const spawnDist = tipDist + bulletRadius + 1.5;
+  const mx = b.x + fx * spawnDist;
+  const my = b.y + fy * spawnDist;
+  return { cx: b.x, cy: b.y, tipX, tipY, mx, my, fx, fy };
 }
 
 const PLAYER_BLOCK_FILL_START: [number, number, number] = [47, 122, 85];
@@ -381,8 +379,8 @@ export function GameCanvas({
         const m = gunMuzzle(
           pFire,
           squareHalf,
-          gcfg.muzzleForward,
-          gcfg.barrelLength
+          gcfg.barrelPastEdge,
+          br
         );
         const id = sim.spawnBullet(
           m.mx,
@@ -400,8 +398,8 @@ export function GameCanvas({
         const m = gunMuzzle(
           aFire,
           squareHalf,
-          gcfg.muzzleForward,
-          gcfg.barrelLength
+          gcfg.barrelPastEdge,
+          br
         );
         const id = sim.spawnBullet(
           m.mx,
@@ -535,13 +533,13 @@ export function GameCanvas({
         const m = gunMuzzle(
           b,
           squareHalf,
-          gcfg.muzzleForward,
-          gcfg.barrelLength
+          gcfg.barrelPastEdge,
+          gcfg.bulletRadius
         );
-        const e = toS(m.edgeX, m.edgeY);
+        const c = toS(m.cx, m.cy);
         const t = toS(m.tipX, m.tipY);
         ctx.beginPath();
-        ctx.moveTo(e.x, e.y);
+        ctx.moveTo(c.x, c.y);
         ctx.lineTo(t.x, t.y);
         ctx.strokeStyle = "#1a1f1c";
         ctx.lineWidth = 2.5;
