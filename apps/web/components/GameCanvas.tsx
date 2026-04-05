@@ -25,14 +25,6 @@ type PhysBody = {
 const MAX_HP = 10;
 const DAMAGE_ZONE_INTERVAL_MS = 5000;
 
-/** Fibonacci scale for R-hold rotation (rad/s); negative = clockwise in Matter. */
-const FIB_OMEGA = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233] as const;
-
-function fibOmegaRadPerSec(holdMs: number): number {
-  const idx = Math.min(FIB_OMEGA.length - 1, Math.floor(holdMs / 90));
-  return (-FIB_OMEGA[idx]! * 0.22) / 5;
-}
-
 function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -96,12 +88,10 @@ export function GameCanvas({
     s: false,
     d: false,
     space: false,
-    r: false,
   });
   const jumpConsumedRef = useRef(false);
   const knifeTriggerRef = useRef(false);
   const mouseScreenRef = useRef({ x: 0, y: 0 });
-  const rDownAtRef = useRef<number | null>(null);
   const aiAttackHeldRef = useRef(false);
 
   const finishOnce = useCallback(
@@ -168,12 +158,6 @@ export function GameCanvas({
         e.preventDefault();
         keys.space = true;
       }
-      if (e.code === "KeyR") {
-        keys.r = true;
-        if (rDownAtRef.current === null) {
-          rDownAtRef.current = performance.now();
-        }
-      }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       const keys = keysRef.current;
@@ -182,11 +166,6 @@ export function GameCanvas({
       if (e.code === "KeyS") keys.s = false;
       if (e.code === "KeyD") keys.d = false;
       if (e.code === "Space") keys.space = false;
-      if (e.code === "KeyR") {
-        keys.r = false;
-        rDownAtRef.current = null;
-        sim.setAngularVelocity("player", 0);
-      }
     };
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0) knifeTriggerRef.current = true;
@@ -202,7 +181,7 @@ export function GameCanvas({
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("mousedown", onMouseDown);
-    canvasHost.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mousemove", onMouseMove);
 
     const resize = () => {
       const parent = canvasHost.parentElement;
@@ -363,10 +342,13 @@ export function GameCanvas({
         aiKnifeDealtHit = false;
       }
 
-      if (keys.r && rDownAtRef.current !== null) {
-        const hold = now - rDownAtRef.current;
-        sim.setAngularVelocity("player", fibOmegaRadPerSec(hold));
-      }
+      const aimPlayer = Math.atan2(
+        worldMouse.y - player.y,
+        worldMouse.x - player.x
+      );
+      sim.setAngle("player", aimPlayer);
+      const aimAi = Math.atan2(player.y - aiBody.y, player.x - aiBody.x);
+      sim.setAngle("ai", aimAi);
 
       sim.step(dtMs);
 
@@ -630,7 +612,7 @@ export function GameCanvas({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("mousedown", onMouseDown);
-      canvasHost.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mousemove", onMouseMove);
       ro.disconnect();
       sim.destroy();
     };

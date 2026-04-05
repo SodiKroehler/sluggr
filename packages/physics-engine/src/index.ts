@@ -35,6 +35,7 @@ type SimulationApi = {
   getBodies: () => SimulationBody[];
   applyForce: (bodyId: string, fx: number, fy: number) => void;
   setAngularVelocity: (bodyId: string, w: number) => void;
+  setAngle: (bodyId: string, angle: number) => void;
   destroy: () => void;
 };
 
@@ -169,6 +170,13 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       const b = idToBody.get(bodyId);
       if (!b) return;
       Matter.Body.setAngularVelocity(b, w);
+    },
+    setAngle(bodyId: string, angle: number) {
+      if (destroyed) return;
+      const b = idToBody.get(bodyId);
+      if (!b) return;
+      Matter.Body.setAngle(b, angle);
+      Matter.Body.setAngularVelocity(b, 0);
     },
     destroy() {
       if (destroyed) return;
