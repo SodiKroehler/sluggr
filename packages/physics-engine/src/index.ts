@@ -37,8 +37,8 @@ type SimulationApi = {
   applyForce: (bodyId: string, fx: number, fy: number) => void;
   setAngularVelocity: (bodyId: string, w: number) => void;
   setAngle: (bodyId: string, angle: number) => void;
-  /** Dynamic cube (player-placed wall block), centered at (x,y). */
-  placeCube: (x: number, y: number, side: number) => void;
+  /** Dynamic cube (player-placed wall block), centered at (x,y). Returns body id or "". */
+  placeCube: (x: number, y: number, side: number) => string;
   spawnBullet: (
     x: number,
     y: number,
@@ -214,7 +214,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       Matter.Body.setAngularVelocity(b, 0);
     },
     placeCube(x: number, y: number, side: number) {
-      if (destroyed) return;
+      if (destroyed) return "";
       const half = side / 2;
       const clampedX = Math.max(-hw + half + 2, Math.min(hw - half - 2, x));
       const clampedY = Math.max(-hh + half + 2, Math.min(hh - half - 2, y));
@@ -224,6 +224,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       });
       blockBodies.push(cube);
       Matter.World.add(world, cube);
+      return String(cube.id);
     },
     spawnBullet(
       x: number,

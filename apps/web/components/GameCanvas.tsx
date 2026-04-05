@@ -50,6 +50,36 @@ function gunMuzzle(
   return { edgeX, edgeY, tipX, tipY, mx, my, fx, fy };
 }
 
+const PLAYER_BLOCK_FILL_START: [number, number, number] = [47, 122, 85];
+const PLAYER_BLOCK_STROKE_START: [number, number, number] = [30, 74, 50];
+const PLAYER_BLOCK_FILL_END: [number, number, number] = [210, 214, 210];
+const PLAYER_BLOCK_STROKE_END: [number, number, number] = [175, 180, 175];
+const PLACED_BLOCK_COLOR_MS = 1000;
+
+function lerpByte(a: number, b: number, t: number) {
+  return Math.round(a + (b - a) * t);
+}
+
+function lerpRgb(
+  from: readonly [number, number, number],
+  to: readonly [number, number, number],
+  t: number
+) {
+  return `rgb(${lerpByte(from[0], to[0], t)},${lerpByte(from[1], to[1], t)},${lerpByte(from[2], to[2], t)})`;
+}
+
+/** Closest place-cube grid cell center to the player (grid step = cell). */
+function snapPlaceGridCenter(
+  playerX: number,
+  playerY: number,
+  cell: number
+): { x: number; y: number } {
+  return {
+    x: Math.round(playerX / cell) * cell,
+    y: Math.round(playerY / cell) * cell,
+  };
+}
+
 function pointInDamageZone(
   px: number,
   py: number,
@@ -94,7 +124,7 @@ export function GameCanvas({
   const jumpConsumedRef = useRef(false);
   const fireTriggerRef = useRef(false);
   const mouseScreenRef = useRef({ x: 0, y: 0 });
-  const pendingPlaceRef = useRef<{ sx: number; sy: number } | null>(null);
+  const placeBlockTriggerRef = useRef(false);
   const aiAttackHeldRef = useRef(false);
 
   const finishOnce = useCallback(
@@ -145,6 +175,7 @@ export function GameCanvas({
     let lastAiDzDamageAt = 0;
     let raf = 0;
     let lastTs = performance.now();
+    const playerPlacedBlockSpawnMs = new Map<string, number>();
 
     const onKeyDown = (e: KeyboardEvent) => {
       const keys = keysRef.current;
@@ -171,11 +202,7 @@ export function GameCanvas({
     const onCanvasMouseDown = (e: MouseEvent) => {
       if (e.button === 2) {
         e.preventDefault();
-        const rect = canvasHost.getBoundingClientRect();
-        pendingPlaceRef.current = {
-          sx: e.clientX - rect.left,
-          sy: e.clientY - rect.top,
-        };
+        placeBlockTriggerRef.current = true;
       }
     };
     const onMouseMove = (e: MouseEvent) => {
@@ -243,12 +270,12 @@ export function GameCanvas({
         y: (ms.y - cy) / scale,
       };
 
-      const pp = pendingPlaceRef.current;
-      if (pp) {
-        pendingPlaceRef.current = null;
-        const pwx = (pp.sx - cx) / scale;
-        const pwy = (pp.sy - cy) / scale;
-        sim.placeCube(pwx, pwy, mapConfig.placeCubeSize);
+      if (placeBlockTriggerRef.current) {
+        placeBlockTriggerRef.current = false;
+        const cell = mapConfig.placeCubeSize;
+        const { x: gx, y: gy } = snapPlaceGridCenter(player.x, player.y, cell);
+        const id = sim.placeCube(gx, gy, cell);
+        if (id) playerPlacedBlockSpawnMs.set(id, nowWall);
       }
 
       const snapshot: GameSnapshot = {
@@ -530,8 +557,23 @@ export function GameCanvas({
           for (let i = 1; i < vs.length; i++) ctx.lineTo(vs[i].x, vs[i].y);
           ctx.closePath();
         }
-        ctx.fillStyle = "#b8c9b8";
-        ctx.strokeStyle = "#7a9a84";
+        const spawn = playerPlacedBlockSpawnMs.get(b.id);
+        if (spawn !== undefined) {
+          const t = Math.min(1, (nowWall - spawn) / PLACED_BLOCK_COLOR_MS);
+          ctx.fillStyle = lerpRgb(
+            PLAYER_BLOCK_FILL_START,
+            PLAYER_BLOCK_FILL_END,
+            t
+          );
+          ctx.strokeStyle = lerpRgb(
+            PLAYER_BLOCK_STROKE_START,
+            PLAYER_BLOCK_STROKE_END,
+            t
+          );
+        } else {
+          ctx.fillStyle = "#b8c9b8";
+          ctx.strokeStyle = "#7a9a84";
+        }
         ctx.lineWidth = 2;
         ctx.fill();
         ctx.stroke();

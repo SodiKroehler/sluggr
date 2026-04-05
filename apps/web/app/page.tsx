@@ -288,7 +288,7 @@ export default function HomePage() {
             background: "var(--panel)",
           }}
         >
-          WASD move · Space jump toward cursor · Left click shoot · Right-click place
+          WASD move · Space jump toward cursor · Left click shoot · Right-click place block (grid at you)
           block · Aim with mouse · Hazard zone
         </p>
       </div>

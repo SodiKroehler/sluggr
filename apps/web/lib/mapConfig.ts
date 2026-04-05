@@ -23,6 +23,7 @@ export type MapConfig = {
   squareSize: number;
   shields: ShieldPlacement[];
   damageZone: DamageZone | null;
+  /** Grid step and side length for player-placed blocks (snapped to player). */
   placeCubeSize: number;
 };
 
@@ -34,6 +35,5 @@ export const DEFAULT_MAP: MapConfig = {
   squareSize: 34,
   shields: [],
   damageZone: { x: 0, y: 0, halfWidth: 22, halfHeight: 18 },
-  /** Player-placed wall cubes (right-click). */
   placeCubeSize: 30,
 };
