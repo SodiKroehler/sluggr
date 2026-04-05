@@ -37,7 +37,7 @@ type SimulationApi = {
   applyForce: (bodyId: string, fx: number, fy: number) => void;
   setAngularVelocity: (bodyId: string, w: number) => void;
   setAngle: (bodyId: string, angle: number) => void;
-  /** Dynamic cube (player-placed wall block), centered at (x,y). Returns body id or "". */
+  /** Static cube (player-placed; fixed in world). Returns body id or "". */
   placeCube: (x: number, y: number, side: number) => string;
   spawnBullet: (
     x: number,
@@ -142,10 +142,9 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
   Matter.Body.setAngle(aiBody, config.ai.angle);
 
   const blockOpts: Matter.IChamferableBodyDefinition = {
-    frictionAir: config.frictionAir ?? 0.025,
+    isStatic: true,
     friction: 0.18,
     restitution: 0.38,
-    density: 0.01,
     label: "shield",
     collisionFilter: { category: CAT_STATIC, mask: MASK_STATIC },
   };

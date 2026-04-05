@@ -25,9 +25,29 @@ type PhysBody = {
 
 const MAX_HP = 10;
 const DAMAGE_ZONE_INTERVAL_MS = 5000;
+const DAMAGE_FLASH_MS = 140;
 
-function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
+/** Circle vs actor square (center px,py, half-edge, rotation); used for bullet hits. */
+function circleHitsRotatedSquare(
+  bx: number,
+  by: number,
+  br: number,
+  px: number,
+  py: number,
+  half: number,
+  angle: number
+): boolean {
+  const dx = bx - px;
+  const dy = by - py;
+  const c = Math.cos(-angle);
+  const s = Math.sin(-angle);
+  const lx = dx * c - dy * s;
+  const ly = dx * s + dy * c;
+  const qx = Math.max(-half, Math.min(half, lx));
+  const qy = Math.max(-half, Math.min(half, ly));
+  const ex = lx - qx;
+  const ey = ly - qy;
+  return ex * ex + ey * ey <= br * br + 1e-4;
 }
 
 /** Gun: line from square center through front face, `pastEdge` beyond edge; muzzle past tip for spawn. */
@@ -159,7 +179,6 @@ export function GameCanvas({
 
     const gcfg = weaponConfig.gun;
     const squareHalf = mapConfig.squareSize / 2;
-    const hitSlack = squareHalf * Math.SQRT2;
 
     let playerHp = MAX_HP;
     let aiHp = MAX_HP;
@@ -174,6 +193,8 @@ export function GameCanvas({
     let raf = 0;
     let lastTs = performance.now();
     const playerPlacedBlockSpawnMs = new Map<string, number>();
+    let playerDamageFlashUntil = 0;
+    let aiDamageFlashUntil = 0;
 
     const onKeyDown = (e: KeyboardEvent) => {
       const keys = keysRef.current;
@@ -420,15 +441,28 @@ export function GameCanvas({
       if (p2 && a2) {
         const now2 = performance.now();
         const dmg = gcfg.damage;
+        const brHit = gcfg.bulletRadius;
         for (const b of after) {
           if (b.label !== "bullet" || !b.bulletOwner) continue;
           const target = b.bulletOwner === "player" ? a2 : p2;
           if (
-            dist(b, target) <=
-            hitSlack + gcfg.bulletRadius
+            circleHitsRotatedSquare(
+              b.x,
+              b.y,
+              brHit,
+              target.x,
+              target.y,
+              squareHalf,
+              target.angle
+            )
           ) {
-            if (b.bulletOwner === "player") aiHp -= dmg;
-            else playerHp -= dmg;
+            if (b.bulletOwner === "player") {
+              aiHp -= dmg;
+              aiDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
+            } else {
+              playerHp -= dmg;
+              playerDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
+            }
             sim.removeBullet(b.id);
           }
         }
@@ -439,6 +473,7 @@ export function GameCanvas({
             playerHp -= 1;
             lastPlayerDzDamageAt = now2;
             playerWasInDz = true;
+            playerDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
           } else if (
             pin &&
             playerWasInDz &&
@@ -446,6 +481,7 @@ export function GameCanvas({
           ) {
             playerHp -= 1;
             lastPlayerDzDamageAt = now2;
+            playerDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
           } else if (!pin) {
             playerWasInDz = false;
           }
@@ -455,6 +491,7 @@ export function GameCanvas({
             aiHp -= 1;
             lastAiDzDamageAt = now2;
             aiWasInDz = true;
+            aiDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
           } else if (
             ain &&
             aiWasInDz &&
@@ -462,6 +499,7 @@ export function GameCanvas({
           ) {
             aiHp -= 1;
             lastAiDzDamageAt = now2;
+            aiDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
           } else if (!ain) {
             aiWasInDz = false;
           }
@@ -581,12 +619,22 @@ export function GameCanvas({
         if (b.label === "shield") drawShield(b);
       }
 
+      const playerHitFlash = nowWall < playerDamageFlashUntil;
+      const aiHitFlash = nowWall < aiDamageFlashUntil;
       for (const b of after) {
         if (b.label === "player") {
-          drawSquare(b, "#2f7a55", "#1e4a32");
+          drawSquare(
+            b,
+            playerHitFlash ? "#d04545" : "#2f7a55",
+            playerHitFlash ? "#7a1818" : "#1e4a32"
+          );
           drawGun(b);
         } else if (b.label === "ai") {
-          drawSquare(b, "#5a6d62", "#2c3830");
+          drawSquare(
+            b,
+            aiHitFlash ? "#d04545" : "#5a6d62",
+            aiHitFlash ? "#7a1818" : "#2c3830"
+          );
           drawGun(b);
         }
       }
