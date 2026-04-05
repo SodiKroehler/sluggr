@@ -1,0 +1,14 @@
+{
+  "name": "locket-game",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:libs": "npm run build -w @locket/physics-engine && npm run build -w @locket/ai-brain",
+    "dev": "npm run build:libs && npm run dev -w web",
+    "build": "npm run build:libs && npm run build -w web",
+    "lint": "npm run lint -w web"
+  }
+}
