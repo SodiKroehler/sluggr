@@ -2,13 +2,15 @@ import Matter from "matter-js";
 
 type SimulationBody = {
   id: string;
-  label: "player" | "ai" | "floor" | "shield";
+  label: "player" | "ai" | "floor" | "shield" | "bullet";
   x: number;
   y: number;
   angle: number;
   vx: number;
   vy: number;
   vertices: { x: number; y: number }[];
+  /** Set when label is "bullet"; used for damage (no friendly fire). */
+  bulletOwner?: "player" | "ai";
 };
 
 type ShieldSpec = {
@@ -37,8 +39,27 @@ type SimulationApi = {
   setAngle: (bodyId: string, angle: number) => void;
   /** Dynamic cube (player-placed wall block), centered at (x,y). */
   placeCube: (x: number, y: number, side: number) => void;
+  spawnBullet: (
+    x: number,
+    y: number,
+    vx: number,
+    vy: number,
+    radius: number,
+    owner: "player" | "ai"
+  ) => string;
+  removeBullet: (id: string) => void;
   destroy: () => void;
 };
+
+/** Walls/shields; bullets bounce, actors collide. */
+const CAT_STATIC = 0x0001;
+/** Player / AI squares. */
+const CAT_ACTOR = 0x0002;
+/** Projectiles: collide with static only (damage vs actors handled in game). */
+const CAT_BULLET = 0x0008;
+const MASK_STATIC = CAT_STATIC | CAT_ACTOR | CAT_BULLET;
+const MASK_ACTOR = CAT_STATIC | CAT_ACTOR;
+const MASK_BULLET = CAT_STATIC;
 
 function toSimulationBody(
   body: Matter.Body,
@@ -48,6 +69,10 @@ function toSimulationBody(
     x: v.x,
     y: v.y,
   }));
+  const owner =
+    label === "bullet"
+      ? (body as Matter.Body & { bulletOwner?: "player" | "ai" }).bulletOwner
+      : undefined;
   return {
     id: String(body.id),
     label,
@@ -57,6 +82,7 @@ function toSimulationBody(
     vx: body.velocity.x,
     vy: body.velocity.y,
     vertices: verts,
+    ...(owner ? { bulletOwner: owner } : {}),
   };
 }
 
@@ -72,6 +98,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
     friction: 0.12,
     restitution: 0.45,
     label: "floor",
+    collisionFilter: { category: CAT_STATIC, mask: MASK_STATIC },
   };
 
   const floor = Matter.Bodies.rectangle(0, hh + thick / 2, hw * 2 + thick * 2, thick, {
@@ -93,6 +120,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
     friction: 0.06,
     restitution: 0.62,
     density: 0.0035,
+    collisionFilter: { category: CAT_ACTOR, mask: MASK_ACTOR },
   };
 
   const player = Matter.Bodies.rectangle(
@@ -119,9 +147,11 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
     restitution: 0.38,
     density: 0.01,
     label: "shield",
+    collisionFilter: { category: CAT_STATIC, mask: MASK_STATIC },
   };
 
   const blockBodies: Matter.Body[] = [];
+  const bulletBodies: Matter.Body[] = [];
   const specs = config.shields ?? [];
   for (let i = 0; i < specs.length; i++) {
     const s = specs[i]!;
@@ -159,6 +189,9 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       for (const bb of blockBodies) {
         out.push(toSimulationBody(bb, "shield"));
       }
+      for (const bb of bulletBodies) {
+        out.push(toSimulationBody(bb, "bullet"));
+      }
       return out;
     },
     applyForce(bodyId: string, fx: number, fy: number) {
@@ -192,9 +225,42 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       blockBodies.push(cube);
       Matter.World.add(world, cube);
     },
+    spawnBullet(
+      x: number,
+      y: number,
+      vx: number,
+      vy: number,
+      radius: number,
+      owner: "player" | "ai"
+    ) {
+      if (destroyed) return "";
+      const bullet = Matter.Bodies.circle(x, y, radius, {
+        frictionAir: 0,
+        friction: 0,
+        restitution: 0.96,
+        density: 0.00035,
+        label: "bullet",
+        collisionFilter: { category: CAT_BULLET, mask: MASK_BULLET },
+      });
+      (bullet as Matter.Body & { bulletOwner?: "player" | "ai" }).bulletOwner =
+        owner;
+      Matter.Body.setVelocity(bullet, { x: vx, y: vy });
+      bulletBodies.push(bullet);
+      Matter.World.add(world, bullet);
+      return String(bullet.id);
+    },
+    removeBullet(id: string) {
+      if (destroyed) return;
+      const idx = bulletBodies.findIndex((b) => String(b.id) === id);
+      if (idx === -1) return;
+      const b = bulletBodies[idx]!;
+      Matter.World.remove(world, b);
+      bulletBodies.splice(idx, 1);
+    },
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      bulletBodies.length = 0;
       Matter.World.clear(world, false);
       Matter.Engine.clear(engine);
     },

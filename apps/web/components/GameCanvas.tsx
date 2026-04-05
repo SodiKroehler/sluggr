@@ -13,13 +13,14 @@ import type { CombatConfig } from "@/lib/weaponConfig";
 
 type PhysBody = {
   id: string;
-  label: "player" | "ai" | "floor" | "shield";
+  label: "player" | "ai" | "floor" | "shield" | "bullet";
   x: number;
   y: number;
   angle: number;
   vx: number;
   vy: number;
   vertices: { x: number; y: number }[];
+  bulletOwner?: "player" | "ai";
 };
 
 const MAX_HP = 10;
@@ -29,23 +30,24 @@ function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function knifeTip(
+/** Gun fixed on the square's right edge (local +Y), barrel along aim (+X). */
+function gunMuzzle(
   b: PhysBody,
   squareHalf: number,
-  bladeReach: number
-): { x: number; y: number } {
+  muzzleForward: number,
+  barrelLength: number
+) {
   const fx = Math.cos(b.angle);
   const fy = Math.sin(b.angle);
-  return {
-    x: b.x + fx * (squareHalf + bladeReach),
-    y: b.y + fy * (squareHalf + bladeReach),
-  };
-}
-
-function knifeBase(b: PhysBody, squareHalf: number): { x: number; y: number } {
-  const fx = Math.cos(b.angle);
-  const fy = Math.sin(b.angle);
-  return { x: b.x + fx * squareHalf, y: b.y + fy * squareHalf };
+  const rx = -fy;
+  const ry = fx;
+  const edgeX = b.x + rx * squareHalf;
+  const edgeY = b.y + ry * squareHalf;
+  const mx = edgeX + fx * muzzleForward;
+  const my = edgeY + fy * muzzleForward;
+  const tipX = edgeX + fx * barrelLength;
+  const tipY = edgeY + fy * barrelLength;
+  return { edgeX, edgeY, tipX, tipY, mx, my, fx, fy };
 }
 
 function pointInDamageZone(
@@ -90,7 +92,7 @@ export function GameCanvas({
     space: false,
   });
   const jumpConsumedRef = useRef(false);
-  const knifeTriggerRef = useRef(false);
+  const fireTriggerRef = useRef(false);
   const mouseScreenRef = useRef({ x: 0, y: 0 });
   const pendingPlaceRef = useRef<{ sx: number; sy: number } | null>(null);
   const aiAttackHeldRef = useRef(false);
@@ -127,21 +129,16 @@ export function GameCanvas({
       frictionAir: 0.014,
     });
 
-    const k = weaponConfig.knife;
+    const gcfg = weaponConfig.gun;
     const squareHalf = mapConfig.squareSize / 2;
+    const hitSlack = squareHalf * Math.SQRT2;
 
     let playerHp = MAX_HP;
     let aiHp = MAX_HP;
     const sessionStart = performance.now();
-    let playerKnifeUntil = 0;
-    let aiKnifeUntil = 0;
-    let playerKnifeReadyAt = 0;
-    let aiKnifeReadyAt = 0;
-    let playerKnifeDealtHit = false;
-    let aiKnifeDealtHit = false;
+    let playerGunReadyAt = 0;
+    let aiGunReadyAt = 0;
     let tick = 0;
-    let playerWasKnife = false;
-    let playerKnifeEndedAt = 0;
     let playerWasInDz = false;
     let aiWasInDz = false;
     let lastPlayerDzDamageAt = 0;
@@ -169,7 +166,7 @@ export function GameCanvas({
       if (e.code === "Space") keys.space = false;
     };
     const onMouseDown = (e: MouseEvent) => {
-      if (e.button === 0) knifeTriggerRef.current = true;
+      if (e.button === 0) fireTriggerRef.current = true;
     };
     const onCanvasMouseDown = (e: MouseEvent) => {
       if (e.button === 2) {
@@ -254,17 +251,6 @@ export function GameCanvas({
         sim.placeCube(pwx, pwy, mapConfig.placeCubeSize);
       }
 
-      const playerKnifeOut = now < playerKnifeUntil;
-
-      if (playerWasKnife && !playerKnifeOut) {
-        playerKnifeEndedAt = now;
-      }
-      playerWasKnife = playerKnifeOut;
-
-      const opponentKnifeRecoverySec = playerKnifeOut
-        ? 0
-        : Math.min(2, (now - playerKnifeEndedAt) / 1000);
-
       const snapshot: GameSnapshot = {
         tick,
         dtMs,
@@ -283,8 +269,8 @@ export function GameCanvas({
         selfHp: aiHp,
         opponentHp: playerHp,
         timeLeftSec,
-        opponentKnifeExtended: playerKnifeOut,
-        opponentKnifeRecoverySec,
+        opponentKnifeExtended: false,
+        opponentKnifeRecoverySec: 0,
       };
 
       const aiIntent = decideAiAction(snapshot, aiPreset);
@@ -326,17 +312,6 @@ export function GameCanvas({
       }
       if (!keys.space) jumpConsumedRef.current = false;
 
-      if (
-        knifeTriggerRef.current &&
-        now >= playerKnifeReadyAt &&
-        now >= playerKnifeUntil
-      ) {
-        playerKnifeUntil = now + k.extendDurationMs;
-        playerKnifeReadyAt = now + k.cooldownMs;
-        playerKnifeDealtHit = false;
-      }
-      knifeTriggerRef.current = false;
-
       sim.applyForce(
         "ai",
         aiIntent.moveX * weaponConfig.moveForce,
@@ -360,11 +335,6 @@ export function GameCanvas({
 
       const aiAttackEdge = aiIntent.attack && !aiAttackHeldRef.current;
       aiAttackHeldRef.current = aiIntent.attack;
-      if (aiAttackEdge && now >= aiKnifeReadyAt && now >= aiKnifeUntil) {
-        aiKnifeUntil = now + k.extendDurationMs;
-        aiKnifeReadyAt = now + k.cooldownMs;
-        aiKnifeDealtHit = false;
-      }
 
       const aimPlayer = Math.atan2(
         worldMouse.y - player.y,
@@ -374,6 +344,49 @@ export function GameCanvas({
       const aimAi = Math.atan2(player.y - aiBody.y, player.x - aiBody.x);
       sim.setAngle("ai", aimAi);
 
+      const spd = gcfg.bulletSpeed;
+      const br = gcfg.bulletRadius;
+      const preBodies = sim.getBodies() as PhysBody[];
+      const pFire = preBodies.find((b) => b.label === "player");
+      const aFire = preBodies.find((b) => b.label === "ai");
+
+      if (fireTriggerRef.current && now >= playerGunReadyAt && pFire) {
+        const m = gunMuzzle(
+          pFire,
+          squareHalf,
+          gcfg.muzzleForward,
+          gcfg.barrelLength
+        );
+        const id = sim.spawnBullet(
+          m.mx,
+          m.my,
+          m.fx * spd,
+          m.fy * spd,
+          br,
+          "player"
+        );
+        if (id) playerGunReadyAt = now + gcfg.cooldownMs;
+      }
+      fireTriggerRef.current = false;
+
+      if (aiAttackEdge && now >= aiGunReadyAt && aFire) {
+        const m = gunMuzzle(
+          aFire,
+          squareHalf,
+          gcfg.muzzleForward,
+          gcfg.barrelLength
+        );
+        const id = sim.spawnBullet(
+          m.mx,
+          m.my,
+          m.fx * spd,
+          m.fy * spd,
+          br,
+          "ai"
+        );
+        if (id) aiGunReadyAt = now + gcfg.cooldownMs;
+      }
+
       sim.step(dtMs);
 
       const after = sim.getBodies() as PhysBody[];
@@ -381,21 +394,17 @@ export function GameCanvas({
       const a2 = after.find((b) => b.label === "ai");
       if (p2 && a2) {
         const now2 = performance.now();
-        const pk = now2 < playerKnifeUntil;
-        const ak = now2 < aiKnifeUntil;
-
-        if (pk && !playerKnifeDealtHit) {
-          const tip = knifeTip(p2, squareHalf, k.extendLength);
-          if (dist(tip, { x: a2.x, y: a2.y }) <= k.tipHitRadius) {
-            aiHp -= k.damage;
-            playerKnifeDealtHit = true;
-          }
-        }
-        if (ak && !aiKnifeDealtHit) {
-          const tip = knifeTip(a2, squareHalf, k.extendLength);
-          if (dist(tip, { x: p2.x, y: p2.y }) <= k.tipHitRadius) {
-            playerHp -= k.damage;
-            aiKnifeDealtHit = true;
+        const dmg = gcfg.damage;
+        for (const b of after) {
+          if (b.label !== "bullet" || !b.bulletOwner) continue;
+          const target = b.bulletOwner === "player" ? a2 : p2;
+          if (
+            dist(b, target) <=
+            hitSlack + gcfg.bulletRadius
+          ) {
+            if (b.bulletOwner === "player") aiHp -= dmg;
+            else playerHp -= dmg;
+            sim.removeBullet(b.id);
           }
         }
 
@@ -495,45 +504,21 @@ export function GameCanvas({
         ctx.stroke();
       };
 
-      const drawKnife = (b: PhysBody, extended: boolean) => {
-        const reach = extended ? k.extendLength : k.retractLength;
-        const tipW = knifeTip(b, squareHalf, reach);
-        const baseC = knifeBase(b, squareHalf * 0.88);
-        const fx = Math.cos(b.angle);
-        const fy = Math.sin(b.angle);
-        const px = -fy;
-        const py = fx;
-        const baseHalfW = extended ? 4.2 : 2.4;
-        const tipHalfW = 0.65;
-        const bl = { x: baseC.x + px * baseHalfW, y: baseC.y + py * baseHalfW };
-        const br = { x: baseC.x - px * baseHalfW, y: baseC.y - py * baseHalfW };
-        const tl = { x: tipW.x - px * tipHalfW, y: tipW.y - py * tipHalfW };
-        const tr = { x: tipW.x + px * tipHalfW, y: tipW.y + py * tipHalfW };
-        const sbl = toS(bl.x, bl.y);
-        const sbr = toS(br.x, br.y);
-        const stl = toS(tl.x, tl.y);
-        const str = toS(tr.x, tr.y);
+      const drawGun = (b: PhysBody) => {
+        const m = gunMuzzle(
+          b,
+          squareHalf,
+          gcfg.muzzleForward,
+          gcfg.barrelLength
+        );
+        const e = toS(m.edgeX, m.edgeY);
+        const t = toS(m.tipX, m.tipY);
         ctx.beginPath();
-        ctx.moveTo(sbl.x, sbl.y);
-        ctx.lineTo(sbr.x, sbr.y);
-        ctx.lineTo(str.x, str.y);
-        ctx.lineTo(stl.x, stl.y);
-        ctx.closePath();
-        const midX = (stl.x + str.x) / 2;
-        const midY = (stl.y + str.y) / 2;
-        const g = ctx.createLinearGradient(sbl.x, sbl.y, midX, midY);
-        if (extended) {
-          g.addColorStop(0, "#6a7a72");
-          g.addColorStop(0.35, "#c8d4ce");
-          g.addColorStop(1, "#1a2220");
-        } else {
-          g.addColorStop(0, "#8a948e");
-          g.addColorStop(1, "#4a524e");
-        }
-        ctx.fillStyle = g;
-        ctx.fill();
-        ctx.strokeStyle = extended ? "#141a18" : "#2e3532";
-        ctx.lineWidth = extended ? 1.5 : 1;
+        ctx.moveTo(e.x, e.y);
+        ctx.lineTo(t.x, t.y);
+        ctx.strokeStyle = "#1a1f1c";
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = "round";
         ctx.stroke();
       };
 
@@ -556,15 +541,24 @@ export function GameCanvas({
         if (b.label === "shield") drawShield(b);
       }
 
-      const nowDraw = performance.now();
       for (const b of after) {
         if (b.label === "player") {
           drawSquare(b, "#2f7a55", "#1e4a32");
-          drawKnife(b, nowDraw < playerKnifeUntil);
+          drawGun(b);
         } else if (b.label === "ai") {
           drawSquare(b, "#5a6d62", "#2c3830");
-          drawKnife(b, nowDraw < aiKnifeUntil);
+          drawGun(b);
         }
+      }
+
+      const bulletR = gcfg.bulletRadius * scale;
+      for (const b of after) {
+        if (b.label !== "bullet") continue;
+        const c = toS(b.x, b.y);
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, bulletR, 0, Math.PI * 2);
+        ctx.fillStyle = "#0a0a0a";
+        ctx.fill();
       }
 
       const seg = 10;
