@@ -122,16 +122,35 @@ function snapPlaceGridCenter(
   };
 }
 
-function pointInDamageZone(
+function pointInAnyDamageZone(
   px: number,
   py: number,
-  map: MapConfig
+  zones: MapConfig["damageZones"]
 ): boolean {
-  const z = map.damageZone;
-  if (!z) return false;
-  return (
-    Math.abs(px - z.x) <= z.halfWidth && Math.abs(py - z.y) <= z.halfHeight
-  );
+  for (const z of zones) {
+    if (
+      Math.abs(px - z.x) <= z.halfWidth &&
+      Math.abs(py - z.y) <= z.halfHeight
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function aiSquareColors(
+  preset: AiPersonalityPreset,
+  hitFlash: boolean
+): { fill: string; stroke: string } {
+  if (hitFlash) return { fill: "#d04545", stroke: "#7a1818" };
+  switch (preset) {
+    case "easy":
+      return { fill: "#2f7a55", stroke: "#1e4a32" };
+    case "medium":
+      return { fill: "#d4b429", stroke: "#8f7a12" };
+    case "hard":
+      return { fill: "#c42a2a", stroke: "#7a1010" };
+  }
 }
 
 export type SessionFinish = {
@@ -514,8 +533,12 @@ export function GameCanvas({
           }
         }
 
-        if (mapConfig.damageZone) {
-          const pin = pointInDamageZone(p2.x, p2.y, mapConfig);
+        if (mapConfig.damageZones.length > 0) {
+          const pin = pointInAnyDamageZone(
+            p2.x,
+            p2.y,
+            mapConfig.damageZones
+          );
           if (pin && !playerWasInDz) {
             playerHp -= 1;
             lastPlayerDzDamageAt = now2;
@@ -533,7 +556,11 @@ export function GameCanvas({
             playerWasInDz = false;
           }
 
-          const ain = pointInDamageZone(a2.x, a2.y, mapConfig);
+          const ain = pointInAnyDamageZone(
+            a2.x,
+            a2.y,
+            mapConfig.damageZones
+          );
           if (ain && !aiWasInDz) {
             aiHp -= 1;
             lastAiDzDamageAt = now2;
@@ -566,8 +593,7 @@ export function GameCanvas({
         y: cy + y * scale,
       });
 
-      if (mapConfig.damageZone) {
-        const dz = mapConfig.damageZone;
+      for (const dz of mapConfig.damageZones) {
         const p1 = toS(dz.x - dz.halfWidth, dz.y - dz.halfHeight);
         const p2s = toS(dz.x + dz.halfWidth, dz.y + dz.halfHeight);
         ctx.fillStyle = "rgba(200, 72, 72, 0.22)";
@@ -668,6 +694,7 @@ export function GameCanvas({
 
       const playerHitFlash = nowWall < playerDamageFlashUntil;
       const aiHitFlash = nowWall < aiDamageFlashUntil;
+      const aiColors = aiSquareColors(aiPreset, aiHitFlash);
       for (const b of after) {
         if (b.label === "player") {
           drawSquare(
@@ -677,11 +704,7 @@ export function GameCanvas({
           );
           drawGun(b);
         } else if (b.label === "ai") {
-          drawSquare(
-            b,
-            aiHitFlash ? "#d04545" : "#5a6d62",
-            aiHitFlash ? "#7a1818" : "#2c3830"
-          );
+          drawSquare(b, aiColors.fill, aiColors.stroke);
           drawGun(b);
         }
       }
@@ -704,13 +727,23 @@ export function GameCanvas({
 
       for (let i = 0; i < MAX_HP; i++) {
         const x = margin + i * (seg + gap);
-        ctx.fillStyle = i < playerHp ? "#4a9d6f" : "#c5d4c8";
+        const chunk = Math.max(0, Math.min(1, playerHp - i));
+        ctx.fillStyle = "#c5d4c8";
         ctx.fillRect(x, bottomY, seg, barH);
+        if (chunk > 0) {
+          ctx.fillStyle = "#4a9d6f";
+          ctx.fillRect(x, bottomY, seg * chunk, barH);
+        }
       }
       for (let i = 0; i < MAX_HP; i++) {
         const x = w - margin - seg - i * (seg + gap);
-        ctx.fillStyle = i < aiHp ? "#4a9d6f" : "#c5d4c8";
+        const chunk = Math.max(0, Math.min(1, aiHp - i));
+        ctx.fillStyle = "#c5d4c8";
         ctx.fillRect(x, bottomY, seg, barH);
+        if (chunk > 0) {
+          ctx.fillStyle = "#4a9d6f";
+          ctx.fillRect(x, bottomY, seg * chunk, barH);
+        }
       }
 
       const mm = Math.floor(timeLeftSec / 60);
@@ -781,6 +814,7 @@ export function GameCanvas({
         width: "100%",
         height: "100%",
         touchAction: "none",
+        cursor: "none",
       }}
       aria-label="Game arena"
     />

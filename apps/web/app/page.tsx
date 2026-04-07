@@ -2,6 +2,7 @@
 
 import { GameCanvas, type SessionFinish } from "@/components/GameCanvas";
 import { DEFAULT_MAP } from "@/lib/mapConfig";
+import { rollMatchSetup } from "@/lib/matchRng";
 import {
   createNewToken,
   parsePlayerToken,
@@ -29,7 +30,6 @@ import {
   type CSSProperties,
 } from "react";
 
-const AI_PRESET_LOCKED = "easy" as const;
 const TOKEN_FILENAME = "me.sluggr";
 
 type Phase = "token" | "play" | "ended";
@@ -76,15 +76,23 @@ export default function HomePage() {
   const [profile, setProfile] = useState<PlayerToken | null>(null);
   const [lastFinish, setLastFinish] = useState<SessionFinish | null>(null);
   const [tokenSaveFailed, setTokenSaveFailed] = useState(false);
+  const [sessionKey, setSessionKey] = useState(0);
   const tokenHandleRef = useRef<FileSystemFileHandle | null>(null);
   const legacyFileInputRef = useRef<HTMLInputElement>(null);
 
-  const mapConfig = useMemo(() => ({ ...DEFAULT_MAP }), []);
+  const { aiPreset, mapConfig } = useMemo(() => {
+    const rolled = rollMatchSetup(DEFAULT_MAP.halfWidth, DEFAULT_MAP.halfHeight);
+    return {
+      aiPreset: rolled.aiPreset,
+      mapConfig: { ...DEFAULT_MAP, damageZones: rolled.damageZones },
+    };
+  }, [sessionKey]); // eslint-disable-line react-hooks/exhaustive-deps -- sessionKey rerolls match
   const weaponConfig = useMemo(() => ({ ...DEFAULT_COMBAT }), []);
 
   const applyToken = useCallback((parsed: PlayerToken) => {
     writeSessionProfile(parsed);
     setProfile(parsed);
+    setSessionKey((k) => k + 1);
     setPhase("play");
   }, []);
 
@@ -185,6 +193,7 @@ export default function HomePage() {
   const replayMatch = useCallback(() => {
     setLastFinish(null);
     setTokenSaveFailed(false);
+    setSessionKey((k) => k + 1);
     setPhase("play");
   }, []);
 
@@ -268,12 +277,19 @@ export default function HomePage() {
 
   if (phase === "play" && profile) {
     return (
-      <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          height: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          cursor: "none",
+        }}
+      >
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
           <GameCanvas
             mapConfig={mapConfig}
             weaponConfig={weaponConfig}
-            aiPreset={AI_PRESET_LOCKED}
+            aiPreset={aiPreset}
             onSessionEnd={onSessionEnd}
           />
         </div>
@@ -288,8 +304,8 @@ export default function HomePage() {
             background: "var(--panel)",
           }}
         >
-          WASD move · Space jump toward cursor · Left click shoot · Right-click place block (grid at you)
-          block · Aim with mouse · Hazard zone
+          WASD move · Space jump (toward aim) · Left shoot · Right-click place · Hidden
+          cursor · Red danger zones
         </p>
       </div>
     );

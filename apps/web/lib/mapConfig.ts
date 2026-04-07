@@ -22,7 +22,8 @@ export type MapConfig = {
   floorColor: string;
   squareSize: number;
   shields: ShieldPlacement[];
-  damageZone: DamageZone | null;
+  /** Hazard rectangles (can overlap); empty = none. */
+  damageZones: DamageZone[];
   /** Grid step and side length for player-placed blocks (snapped to player). */
   placeCubeSize: number;
 };
@@ -34,6 +35,6 @@ export const DEFAULT_MAP: MapConfig = {
   floorColor: "#e8eee8",
   squareSize: 34,
   shields: [],
-  damageZone: { x: 0, y: 0, halfWidth: 22, halfHeight: 18 },
+  damageZones: [],
   placeCubeSize: 30,
 };

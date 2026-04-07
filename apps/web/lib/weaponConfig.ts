@@ -40,7 +40,7 @@ export const DEFAULT_COMBAT: CombatConfig = {
     bulletSpeed: 72,
     bulletRadius: 3.2,
     hitRadius: 6.5,
-    damage: 1,
+    damage: 0.5,
     barrelPastEdge: 10,
   },
 };
