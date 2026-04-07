@@ -11,6 +11,8 @@ type SimulationBody = {
   vertices: { x: number; y: number }[];
   /** Set when label is "bullet"; used for damage (no friendly fire). */
   bulletOwner?: "player" | "ai";
+  /** Bullet damage multiplier (lens); default 1. */
+  damageMul?: number;
 };
 
 type ShieldSpec = {
@@ -50,6 +52,9 @@ type SimulationApi = {
   removeBullet: (id: string) => void;
   /** Player-placed cube: after "cure" it collides like map walls (actors + bullets). */
   hardenPlacedCube: (bodyId: string) => void;
+  setBulletVelocity: (id: string, vx: number, vy: number) => void;
+  setBulletPosition: (id: string, x: number, y: number) => void;
+  setBulletDamageMul: (id: string, mul: number) => void;
   destroy: () => void;
 };
 
@@ -80,6 +85,10 @@ function toSimulationBody(
     label === "bullet"
       ? (body as Matter.Body & { bulletOwner?: "player" | "ai" }).bulletOwner
       : undefined;
+  const damageMul =
+    label === "bullet"
+      ? (body as Matter.Body & { damageMul?: number }).damageMul ?? 1
+      : undefined;
   return {
     id: String(body.id),
     label,
@@ -90,6 +99,7 @@ function toSimulationBody(
     vy: body.velocity.y,
     vertices: verts,
     ...(owner ? { bulletOwner: owner } : {}),
+    ...(damageMul !== undefined ? { damageMul } : {}),
   };
 }
 
@@ -259,6 +269,7 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       });
       (bullet as Matter.Body & { bulletOwner?: "player" | "ai" }).bulletOwner =
         owner;
+      (bullet as Matter.Body & { damageMul?: number }).damageMul = 1;
       Matter.Body.setVelocity(bullet, { x: vx, y: vy });
       Matter.Body.setAngularVelocity(bullet, 0);
       Matter.Body.setInertia(bullet, Infinity);
@@ -274,6 +285,24 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
         category: CAT_STATIC,
         mask: MASK_STATIC,
       };
+    },
+    setBulletVelocity(id: string, vx: number, vy: number) {
+      if (destroyed) return;
+      const b = bulletBodies.find((bb) => String(bb.id) === id);
+      if (!b) return;
+      Matter.Body.setVelocity(b, { x: vx, y: vy });
+    },
+    setBulletPosition(id: string, x: number, y: number) {
+      if (destroyed) return;
+      const b = bulletBodies.find((bb) => String(bb.id) === id);
+      if (!b) return;
+      Matter.Body.setPosition(b, { x, y });
+    },
+    setBulletDamageMul(id: string, mul: number) {
+      if (destroyed) return;
+      const b = bulletBodies.find((bb) => String(bb.id) === id);
+      if (!b) return;
+      (b as Matter.Body & { damageMul?: number }).damageMul = mul;
     },
     removeBullet(id: string) {
       if (destroyed) return;

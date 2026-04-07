@@ -81,10 +81,14 @@ export default function HomePage() {
   const legacyFileInputRef = useRef<HTMLInputElement>(null);
 
   const { aiPreset, mapConfig } = useMemo(() => {
-    const rolled = rollMatchSetup(DEFAULT_MAP.halfWidth, DEFAULT_MAP.halfHeight);
+    const rolled = rollMatchSetup(
+      DEFAULT_MAP.halfWidth,
+      DEFAULT_MAP.halfHeight,
+      DEFAULT_MAP.placeCubeSize
+    );
     return {
       aiPreset: rolled.aiPreset,
-      mapConfig: { ...DEFAULT_MAP, damageZones: rolled.damageZones },
+      mapConfig: { ...DEFAULT_MAP, ...rolled.rolledMap },
     };
   }, [sessionKey]); // eslint-disable-line react-hooks/exhaustive-deps -- sessionKey rerolls match
   const weaponConfig = useMemo(() => ({ ...DEFAULT_COMBAT }), []);

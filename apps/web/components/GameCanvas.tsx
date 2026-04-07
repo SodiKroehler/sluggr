@@ -7,8 +7,16 @@ import {
   type GameSnapshot,
 } from "@locket/ai-brain";
 import { useCallback, useEffect, useRef } from "react";
-import { SESSION_DURATION_MS } from "@/lib/gameConstants";
-import type { MapConfig } from "@/lib/mapConfig";
+import {
+  AI_FIRE_COOLDOWN_FRACTION,
+  DANGER_ZONE_DAMAGE_INTERVAL_MS,
+  HEAL_ZONE_INTERVAL_MS,
+  LENS_PASS_SPEED_MULT,
+  MOVE_SPEED_MULTIPLIER,
+  PROJECTILE_SPEED_MULTIPLIER,
+  SESSION_DURATION_MS,
+} from "@/lib/gameConstants";
+import type { BulletLens, MapConfig } from "@/lib/mapConfig";
 import type { CombatConfig } from "@/lib/weaponConfig";
 
 type PhysBody = {
@@ -21,10 +29,10 @@ type PhysBody = {
   vy: number;
   vertices: { x: number; y: number }[];
   bulletOwner?: "player" | "ai";
+  damageMul?: number;
 };
 
 const MAX_HP = 10;
-const DAMAGE_ZONE_INTERVAL_MS = 5000;
 const DAMAGE_FLASH_MS = 140;
 
 /** Circle vs actor square (center px,py, half-edge, rotation); used for bullet hits. */
@@ -125,7 +133,7 @@ function snapPlaceGridCenter(
 function pointInAnyDamageZone(
   px: number,
   py: number,
-  zones: MapConfig["damageZones"]
+  zones: { x: number; y: number; halfWidth: number; halfHeight: number }[]
 ): boolean {
   for (const z of zones) {
     if (
@@ -136,6 +144,28 @@ function pointInAnyDamageZone(
     }
   }
   return false;
+}
+
+function pointInHealZone(
+  px: number,
+  py: number,
+  hz: { x: number; y: number; halfWidth: number; halfHeight: number }
+): boolean {
+  return (
+    Math.abs(px - hz.x) <= hz.halfWidth &&
+    Math.abs(py - hz.y) <= hz.halfHeight
+  );
+}
+
+function circleIntersectsLensAabb(
+  bx: number,
+  by: number,
+  br: number,
+  lens: BulletLens
+): boolean {
+  const dx = Math.max(Math.abs(bx - lens.x) - lens.halfWidth, 0);
+  const dy = Math.max(Math.abs(by - lens.y) - lens.halfHeight, 0);
+  return dx * dx + dy * dy < br * br - 1e-4;
 }
 
 function aiSquareColors(
@@ -220,6 +250,31 @@ export function GameCanvas({
       frictionAir: 0.014,
     });
 
+    const stoneCenterKeys = new Set<string>();
+    for (const s of mapConfig.shields) {
+      if (s.tint === "stone") {
+        stoneCenterKeys.add(`${Math.round(s.x)},${Math.round(s.y)}`);
+      }
+    }
+
+    type DzRun = {
+      x: number;
+      y: number;
+      halfWidth: number;
+      halfHeight: number;
+      vx: number;
+      vy: number;
+    };
+    const dzRun: DzRun[] = mapConfig.damageZones.map((z) => ({
+      x: z.x,
+      y: z.y,
+      halfWidth: z.halfWidth,
+      halfHeight: z.halfHeight,
+      vx: z.vx ?? 0,
+      vy: z.vy ?? 0,
+    }));
+    const lensWasInside = new Map<string, boolean>();
+
     const gcfg = weaponConfig.gun;
     const squareHalf = mapConfig.squareSize / 2;
 
@@ -233,6 +288,10 @@ export function GameCanvas({
     let aiWasInDz = false;
     let lastPlayerDzDamageAt = 0;
     let lastAiDzDamageAt = 0;
+    let playerWasInHeal = false;
+    let aiWasInHeal = false;
+    let lastPlayerHealAt = 0;
+    let lastAiHealAt = 0;
     let raf = 0;
     let lastTs = performance.now();
     const playerPlacedBlockSpawnMs = new Map<string, number>();
@@ -309,6 +368,31 @@ export function GameCanvas({
       const timeLeftSec = Math.max(0, (SESSION_DURATION_MS - elapsedSession) / 1000);
       const dtMs = Math.min(ts - lastTs, 32);
       lastTs = ts;
+
+      const dtSec = dtMs / 1000;
+      const arenaHw = mapConfig.halfWidth;
+      const arenaHh = mapConfig.halfHeight;
+      const zpad = 2;
+      for (const z of dzRun) {
+        z.x += z.vx * dtSec;
+        z.y += z.vy * dtSec;
+        if (z.x - z.halfWidth < -arenaHw + zpad) {
+          z.x = -arenaHw + zpad + z.halfWidth;
+          z.vx *= -1;
+        }
+        if (z.x + z.halfWidth > arenaHw - zpad) {
+          z.x = arenaHw - zpad - z.halfWidth;
+          z.vx *= -1;
+        }
+        if (z.y - z.halfHeight < -arenaHh + zpad) {
+          z.y = -arenaHh + zpad + z.halfHeight;
+          z.vy *= -1;
+        }
+        if (z.y + z.halfHeight > arenaHh - zpad) {
+          z.y = arenaHh - zpad - z.halfHeight;
+          z.vy *= -1;
+        }
+      }
 
       const bodies = sim.getBodies() as PhysBody[];
       const player = bodies.find((b) => b.label === "player");
@@ -389,8 +473,8 @@ export function GameCanvas({
       }
       sim.applyForce(
         "player",
-        mx * weaponConfig.moveForce,
-        my * weaponConfig.moveForce
+        mx * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER,
+        my * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER
       );
 
       if (keys.space && !jumpConsumedRef.current) {
@@ -405,8 +489,8 @@ export function GameCanvas({
         }
         sim.applyForce(
           "player",
-          jx * weaponConfig.jumpImpulse,
-          jy * weaponConfig.jumpImpulse
+          jx * weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER,
+          jy * weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER
         );
         jumpConsumedRef.current = true;
       }
@@ -414,8 +498,8 @@ export function GameCanvas({
 
       sim.applyForce(
         "ai",
-        aiIntent.moveX * weaponConfig.moveForce,
-        aiIntent.moveY * weaponConfig.moveForce
+        aiIntent.moveX * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER,
+        aiIntent.moveY * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER
       );
 
       if (aiIntent.jump && tick % 14 === 0) {
@@ -425,11 +509,21 @@ export function GameCanvas({
         if (jl > 6) {
           sim.applyForce(
             "ai",
-            (jdx / jl) * weaponConfig.jumpImpulse * 0.82,
-            (jdy / jl) * weaponConfig.jumpImpulse * 0.82
+            (jdx / jl) *
+              weaponConfig.jumpImpulse *
+              MOVE_SPEED_MULTIPLIER *
+              0.82,
+            (jdy / jl) *
+              weaponConfig.jumpImpulse *
+              MOVE_SPEED_MULTIPLIER *
+              0.82
           );
         } else {
-          sim.applyForce("ai", 0, -weaponConfig.jumpImpulse * 0.82);
+          sim.applyForce(
+            "ai",
+            0,
+            -weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER * 0.82
+          );
         }
       }
 
@@ -444,7 +538,7 @@ export function GameCanvas({
       const aimAi = Math.atan2(player.y - aiBody.y, player.x - aiBody.x);
       sim.setAngle("ai", aimAi);
 
-      const spd = gcfg.bulletSpeed;
+      const spd = gcfg.bulletSpeed * PROJECTILE_SPEED_MULTIPLIER;
       const br = gcfg.bulletRadius;
       const preBodies = sim.getBodies() as PhysBody[];
       const pFire = preBodies.find((b) => b.label === "player");
@@ -484,7 +578,10 @@ export function GameCanvas({
           br,
           "ai"
         );
-        if (id) aiGunReadyAt = now + gcfg.cooldownMs;
+        if (id) {
+          aiGunReadyAt =
+            now + gcfg.cooldownMs * AI_FIRE_COOLDOWN_FRACTION;
+        }
       }
 
       const bulletPosBeforeStep = new Map<string, { x: number; y: number }>();
@@ -495,6 +592,47 @@ export function GameCanvas({
       }
 
       sim.step(dtMs);
+
+      const lens = mapConfig.bulletLens;
+      if (lens) {
+        const passDot = 0.1;
+        const bodiesForLens = sim.getBodies() as PhysBody[];
+        for (const b of bodiesForLens) {
+          if (b.label !== "bullet") continue;
+          const inside = circleIntersectsLensAabb(
+            b.x,
+            b.y,
+            br,
+            lens
+          );
+          if (!inside) {
+            lensWasInside.delete(b.id);
+            continue;
+          }
+          const wasIn = lensWasInside.get(b.id) ?? false;
+          const dot = b.vx * lens.enterNx + b.vy * lens.enterNy;
+          if (dot > passDot) {
+            if (!wasIn) {
+              sim.setBulletDamageMul(b.id, lens.multiplier);
+              const sp = Math.max(
+                0.35,
+                Math.hypot(b.vx, b.vy) * LENS_PASS_SPEED_MULT
+              );
+              const a = Math.atan2(b.vy, b.vx);
+              sim.setBulletVelocity(
+                b.id,
+                Math.cos(a) * sp,
+                Math.sin(a) * sp
+              );
+            }
+          } else if (!wasIn) {
+            const rvx = b.vx - 2 * dot * lens.enterNx;
+            const rvy = b.vy - 2 * dot * lens.enterNy;
+            sim.setBulletVelocity(b.id, rvx * 0.9, rvy * 0.9);
+          }
+          lensWasInside.set(b.id, true);
+        }
+      }
 
       const after = sim.getBodies() as PhysBody[];
       const p2 = after.find((b) => b.label === "player");
@@ -522,23 +660,21 @@ export function GameCanvas({
               target.angle
             )
           ) {
+            const mul = b.damageMul ?? 1;
+            const dealt = dmg * mul;
             if (b.bulletOwner === "player") {
-              aiHp -= dmg;
+              aiHp -= dealt;
               aiDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
             } else {
-              playerHp -= dmg;
+              playerHp -= dealt;
               playerDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
             }
             sim.removeBullet(b.id);
           }
         }
 
-        if (mapConfig.damageZones.length > 0) {
-          const pin = pointInAnyDamageZone(
-            p2.x,
-            p2.y,
-            mapConfig.damageZones
-          );
+        if (dzRun.length > 0) {
+          const pin = pointInAnyDamageZone(p2.x, p2.y, dzRun);
           if (pin && !playerWasInDz) {
             playerHp -= 1;
             lastPlayerDzDamageAt = now2;
@@ -547,7 +683,7 @@ export function GameCanvas({
           } else if (
             pin &&
             playerWasInDz &&
-            now2 - lastPlayerDzDamageAt >= DAMAGE_ZONE_INTERVAL_MS
+            now2 - lastPlayerDzDamageAt >= DANGER_ZONE_DAMAGE_INTERVAL_MS
           ) {
             playerHp -= 1;
             lastPlayerDzDamageAt = now2;
@@ -556,11 +692,7 @@ export function GameCanvas({
             playerWasInDz = false;
           }
 
-          const ain = pointInAnyDamageZone(
-            a2.x,
-            a2.y,
-            mapConfig.damageZones
-          );
+          const ain = pointInAnyDamageZone(a2.x, a2.y, dzRun);
           if (ain && !aiWasInDz) {
             aiHp -= 1;
             lastAiDzDamageAt = now2;
@@ -569,13 +701,48 @@ export function GameCanvas({
           } else if (
             ain &&
             aiWasInDz &&
-            now2 - lastAiDzDamageAt >= DAMAGE_ZONE_INTERVAL_MS
+            now2 - lastAiDzDamageAt >= DANGER_ZONE_DAMAGE_INTERVAL_MS
           ) {
             aiHp -= 1;
             lastAiDzDamageAt = now2;
             aiDamageFlashUntil = now2 + DAMAGE_FLASH_MS;
           } else if (!ain) {
             aiWasInDz = false;
+          }
+        }
+
+        const hz = mapConfig.healZone;
+        if (hz) {
+          const ph = pointInHealZone(p2.x, p2.y, hz);
+          if (ph && !playerWasInHeal) {
+            playerHp = Math.min(MAX_HP, playerHp + 1);
+            lastPlayerHealAt = now2;
+            playerWasInHeal = true;
+          } else if (
+            ph &&
+            playerWasInHeal &&
+            now2 - lastPlayerHealAt >= HEAL_ZONE_INTERVAL_MS
+          ) {
+            playerHp = Math.min(MAX_HP, playerHp + 1);
+            lastPlayerHealAt = now2;
+          } else if (!ph) {
+            playerWasInHeal = false;
+          }
+
+          const ah = pointInHealZone(a2.x, a2.y, hz);
+          if (ah && !aiWasInHeal) {
+            aiHp = Math.min(MAX_HP, aiHp + 1);
+            lastAiHealAt = now2;
+            aiWasInHeal = true;
+          } else if (
+            ah &&
+            aiWasInHeal &&
+            now2 - lastAiHealAt >= HEAL_ZONE_INTERVAL_MS
+          ) {
+            aiHp = Math.min(MAX_HP, aiHp + 1);
+            lastAiHealAt = now2;
+          } else if (!ah) {
+            aiWasInHeal = false;
           }
         }
       }
@@ -593,7 +760,7 @@ export function GameCanvas({
         y: cy + y * scale,
       });
 
-      for (const dz of mapConfig.damageZones) {
+      for (const dz of dzRun) {
         const p1 = toS(dz.x - dz.halfWidth, dz.y - dz.halfHeight);
         const p2s = toS(dz.x + dz.halfWidth, dz.y + dz.halfHeight);
         ctx.fillStyle = "rgba(200, 72, 72, 0.22)";
@@ -601,6 +768,46 @@ export function GameCanvas({
         ctx.lineWidth = 2;
         ctx.fillRect(p1.x, p1.y, p2s.x - p1.x, p2s.y - p1.y);
         ctx.strokeRect(p1.x, p1.y, p2s.x - p1.x, p2s.y - p1.y);
+      }
+
+      if (mapConfig.healZone) {
+        const hz = mapConfig.healZone;
+        const h1 = toS(hz.x - hz.halfWidth, hz.y - hz.halfHeight);
+        const h2 = toS(hz.x + hz.halfWidth, hz.y + hz.halfHeight);
+        ctx.fillStyle = "rgba(72, 120, 200, 0.2)";
+        ctx.strokeStyle = "rgba(40, 90, 160, 0.5)";
+        ctx.lineWidth = 2;
+        ctx.fillRect(h1.x, h1.y, h2.x - h1.x, h2.y - h1.y);
+        ctx.strokeRect(h1.x, h1.y, h2.x - h1.x, h2.y - h1.y);
+      }
+
+      if (mapConfig.bulletLens) {
+        const L = mapConfig.bulletLens;
+        const l1 = toS(L.x - L.halfWidth, L.y - L.halfHeight);
+        const l2 = toS(L.x + L.halfWidth, L.y + L.halfHeight);
+        ctx.fillStyle = "rgba(140, 90, 180, 0.18)";
+        ctx.strokeStyle = "rgba(90, 50, 120, 0.55)";
+        ctx.lineWidth = 2;
+        ctx.fillRect(l1.x, l1.y, l2.x - l1.x, l2.y - l1.y);
+        ctx.strokeRect(l1.x, l1.y, l2.x - l1.x, l2.y - l1.y);
+        const cx = (l1.x + l2.x) / 2;
+        const cy = (l1.y + l2.y) / 2;
+        ctx.fillStyle = "rgba(50, 30, 70, 0.85)";
+        ctx.font = `bold ${Math.max(11, 13 * scale)}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(`×${L.multiplier}`, cx, cy);
+        const cen = toS(L.x, L.y);
+        const tip = toS(
+          L.x + L.enterNx * (Math.max(L.halfWidth, L.halfHeight) + 8),
+          L.y + L.enterNy * (Math.max(L.halfWidth, L.halfHeight) + 8)
+        );
+        ctx.beginPath();
+        ctx.moveTo(cen.x, cen.y);
+        ctx.lineTo(tip.x, tip.y);
+        ctx.strokeStyle = "rgba(90, 50, 120, 0.75)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
       }
 
       ctx.save();
@@ -667,6 +874,7 @@ export function GameCanvas({
           ctx.closePath();
         }
         const spawn = playerPlacedBlockSpawnMs.get(b.id);
+        const stoneKey = `${Math.round(b.x)},${Math.round(b.y)}`;
         if (spawn !== undefined) {
           const t = Math.min(1, (nowWall - spawn) / PLACED_BLOCK_COLOR_MS);
           ctx.fillStyle = lerpRgb(
@@ -679,6 +887,9 @@ export function GameCanvas({
             PLAYER_BLOCK_STROKE_END,
             t
           );
+        } else if (stoneCenterKeys.has(stoneKey)) {
+          ctx.fillStyle = "#4a4d52";
+          ctx.strokeStyle = "#2a2c30";
         } else {
           ctx.fillStyle = "#b8c9b8";
           ctx.strokeStyle = "#7a9a84";
