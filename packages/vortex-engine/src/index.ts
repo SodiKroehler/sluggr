@@ -27,24 +27,79 @@ function fibStepLength(i: number): number {
   return b;
 }
 
+/** Variation of the Fibonacci spiral on the grid (angle / handedness / length / mirror). */
+export type SpiralVariant = {
+  maxCells: number;
+  /** Rotate which cardinal is “first” in the E,S,W,N cycle (0–3). */
+  dirOffset: number;
+  /** +1 = turn left after each leg, −1 = turn right (opposite winding). */
+  turnSign: 1 | -1;
+  mirrorH: boolean;
+  mirrorV: boolean;
+};
+
+export function defaultSpiralVariant(maxCells: number): SpiralVariant {
+  return {
+    maxCells,
+    dirOffset: 0,
+    turnSign: 1,
+    mirrorH: false,
+    mirrorV: false,
+  };
+}
+
+/** Random spiral for scroll / R / AI. */
+export function randomSpiralVariant(rng: () => number): SpiralVariant {
+  return {
+    maxCells: 52 + Math.floor(rng() * 95),
+    dirOffset: Math.floor(rng() * 4),
+    turnSign: rng() > 0.5 ? 1 : -1,
+    mirrorH: rng() > 0.5,
+    mirrorV: rng() > 0.5,
+  };
+}
+
 /**
- * Fibonacci-length segments: E, S, W, N, … from the exit cell (screen y-down grid).
+ * Fibonacci-length segments from `start`, winding according to `variant`.
+ * Pass a number as 4th arg for legacy fixed maxCells + default winding.
  */
 export function buildFibonacciSpiralPath(
   start: Cell,
   cols: number,
   rows: number,
-  maxCells: number
+  opts: number | SpiralVariant
 ): Cell[] {
+  const variant: SpiralVariant =
+    typeof opts === "number"
+      ? defaultSpiralVariant(opts)
+      : opts;
+  const maxCells = Math.max(1, variant.maxCells);
+
+  const baseDc = [1, 0, -1, 0];
+  const baseDr = [0, 1, 0, -1];
+  const dc: number[] = [0, 0, 0, 0];
+  const dr: number[] = [0, 0, 0, 0];
+  for (let i = 0; i < 4; i++) {
+    const j = (((i + variant.dirOffset) % 4) + 4) % 4;
+    dc[i] = baseDc[j]!;
+    dr[i] = baseDr[j]!;
+  }
+  if (variant.mirrorH) {
+    for (let i = 0; i < 4; i++) dc[i] = -dc[i]!;
+  }
+  if (variant.mirrorV) {
+    for (let i = 0; i < 4; i++) dr[i] = -dr[i]!;
+  }
+
   const path: Cell[] = [{ c: start.c, r: start.r }];
   const seen = new Set<string>([cellKey(start)]);
   let c = start.c;
   let r = start.r;
-  const dc = [1, 0, -1, 0];
-  const dr = [0, 1, 0, -1];
   let dir = 0;
   let seg = 0;
-  while (path.length < maxCells && seg < 40) {
+  const turn = variant.turnSign;
+
+  while (path.length < maxCells && seg < 48) {
     const steps = fibStepLength(seg);
     for (let s = 0; s < steps; s++) {
       c += dc[dir]!;
@@ -56,10 +111,53 @@ export function buildFibonacciSpiralPath(
       path.push({ c, r });
       if (path.length >= maxCells) return path;
     }
-    dir = (dir + 1) % 4;
+    dir = (dir + turn + 4) % 4;
     seg += 1;
   }
   return path;
+}
+
+/** Pixel position moving along the polyline of cell centers; `prog` in [0, path.length-1]. */
+export function pathLerpPx(
+  layout: VortexLayout,
+  path: Cell[],
+  prog: number
+): { x: number; y: number } {
+  if (path.length === 0) {
+    return { x: layout.cx, y: layout.cy };
+  }
+  const maxIdx = path.length - 1;
+  if (prog >= maxIdx) {
+    return cellCenterPx(layout, path[maxIdx]!);
+  }
+  if (prog <= 0) {
+    return cellCenterPx(layout, path[0]!);
+  }
+  const i = Math.floor(prog);
+  const t = prog - i;
+  const a = cellCenterPx(layout, path[i]!);
+  const b = cellCenterPx(layout, path[Math.min(i + 1, maxIdx)]!);
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+  };
+}
+
+/**
+ * Tangential launch speed (px/s) ≈ ωR, amplified. Optional mass scales like heavier rim → more oomph.
+ * cells/s = v_px / cellSize.
+ */
+export function launchPathCellsPerSec(
+  layout: VortexLayout,
+  omegaRadPerSec: number,
+  launchMul: number,
+  massKg = 1
+): number {
+  const R = layout.R;
+  const aC = omegaRadPerSec * omegaRadPerSec * R;
+  const vTan = omegaRadPerSec * R * launchMul;
+  const vPhys = Math.sqrt(vTan * vTan + (aC * R * 0.15 * massKg) / Math.max(0.35, massKg));
+  return vPhys / layout.cellSize;
 }
 
 export type VortexLayout = {
@@ -160,23 +258,35 @@ export function ringAttachmentPx(
 export type VortexMapTuning = {
   /** Fraction of min(canvas) for circle radius. */
   circleFrac: number;
-  /** Radians per second, clockwise. */
+  /** Radians per second, clockwise (planning + released + attract). */
   spinRadPerSec: number;
   /** Ms after both exits chosen before release. */
   planningHoldMs: number;
-  /** Max cells per spiral path. */
+  /** Upper bound when rolling random spirals (actual length is variant). */
   spiralMaxCells: number;
   /** Damage per trap trigger. */
   damageAmount: number;
   /** Match length excluding countdown (ms). */
   matchDurationMs: number;
+  /** Multiplier on tangential launch (higher = faster along path). */
+  launchVelocityMul: number;
+  /** Nominal “rim” mass for launch feel (arbitrary units). */
+  launchMassKg: number;
+  /** Ms after launch before ATTRACT phase. */
+  releasedToAttractMs: number;
+  /** Ms to show ATTRACT before next planning round. */
+  attractDurationMs: number;
 };
 
 export const DEFAULT_VORTEX_TUNING: VortexMapTuning = {
   circleFrac: 0.35,
-  spinRadPerSec: 0.55,
+  spinRadPerSec: 2.35,
   planningHoldMs: 5000,
-  spiralMaxCells: 120,
+  spiralMaxCells: 140,
   damageAmount: 1,
   matchDurationMs: 180_000,
+  launchVelocityMul: 9,
+  launchMassKg: 2.2,
+  releasedToAttractMs: 5000,
+  attractDurationMs: 1600,
 };

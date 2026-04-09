@@ -11,11 +11,15 @@ import {
   cellKey,
   cellsTouchingCircleRing,
   computeVortexLayout,
+  launchPathCellsPerSec,
   manhattan,
   parseCellKey,
+  pathLerpPx,
   pixelToCell,
+  randomSpiralVariant,
   ringAttachmentPx,
   type Cell,
+  type SpiralVariant,
   type VortexLayout,
   type VortexMapTuning,
 } from "@locket/vortex-engine";
@@ -30,6 +34,8 @@ const PATH_HIGHLIGHT = "rgba(230, 200, 60, 0.55)";
 const DAMAGE_PLAYER = "rgba(200, 60, 60, 0.45)";
 const DAMAGE_AI = "rgba(160, 80, 160, 0.4)";
 const RING_HIGHLIGHT = "rgba(80, 120, 200, 0.25)";
+const SPRITE_FRAC = 0.85;
+const RELEASE_LABEL_MS = 1400;
 
 export type VortexSessionFinish = {
   winner: "player" | "ai" | "draw";
@@ -38,7 +44,7 @@ export type VortexSessionFinish = {
   reason: "hp" | "time";
 };
 
-type SimPhase = "countdown" | "planning" | "released" | "ended";
+type SimPhase = "countdown" | "planning" | "released" | "attract";
 
 type SimState = {
   phase: SimPhase;
@@ -74,6 +80,12 @@ type SimState = {
   aiHp: number;
   tick: number;
   planningStart: number;
+
+  releasedWallAt: number | null;
+  attractWallAt: number | null;
+
+  playerVariant: SpiralVariant;
+  aiVariant: SpiralVariant;
 };
 
 type Props = {
@@ -82,9 +94,16 @@ type Props = {
   onSessionEnd: (r: VortexSessionFinish) => void;
 };
 
-function initialSim(layout: VortexLayout, sessionStart: number): SimState {
+function initialSim(layout: VortexLayout, sessionStart: number, tun: VortexMapTuning): SimState {
   const ringKeys = cellsTouchingCircleRing(layout, STROKE_PX);
   const countdownEnd = sessionStart + ARENA_COUNTDOWN_MS;
+  const defVar = {
+    maxCells: tun.spiralMaxCells,
+    dirOffset: 0,
+    turnSign: 1 as const,
+    mirrorH: false,
+    mirrorV: false,
+  };
   return {
     phase: "countdown",
     theta: 0,
@@ -114,27 +133,69 @@ function initialSim(layout: VortexLayout, sessionStart: number): SimState {
     aiHp: MAX_HP,
     tick: 0,
     planningStart: countdownEnd,
+    releasedWallAt: null,
+    attractWallAt: null,
+    playerVariant: defVar,
+    aiVariant: { ...defVar },
   };
 }
 
+function beginPlanningRound(s: SimState, now: number): void {
+  s.phase = "planning";
+  s.planningStart = now;
+  s.playerExit = null;
+  s.aiExit = null;
+  s.planningEnd = null;
+  s.playerPath = [];
+  s.aiPath = [];
+  s.playerPathProg = 0;
+  s.aiPathProg = 0;
+  s.playerPathSpeed = 0;
+  s.aiPathSpeed = 0;
+  s.playerOnRing = true;
+  s.aiOnRing = true;
+  s.playerCell = null;
+  s.aiCell = null;
+  s.lastPlayerPathIdx = -1;
+  s.lastAiPathIdx = -1;
+  s.releasedWallAt = null;
+  s.attractWallAt = null;
+  s.playerDamage.clear();
+  s.aiDamage.clear();
+}
 
 function tryDamage(
   who: "player" | "ai",
   entered: Cell,
-  s: SimState,
+  st: SimState,
   dmg: number
 ): void {
   if (who === "player") {
-    if (!s.playerDamage.has(cellKey(entered))) return;
-    if (s.aiCell && manhattan(s.aiCell, entered) <= 1) {
-      s.aiHp = Math.max(0, s.aiHp - dmg);
+    if (!st.playerDamage.has(cellKey(entered))) return;
+    if (st.aiCell && manhattan(st.aiCell, entered) <= 1) {
+      st.aiHp = Math.max(0, st.aiHp - dmg);
     }
   } else {
-    if (!s.aiDamage.has(cellKey(entered))) return;
-    if (s.playerCell && manhattan(s.playerCell, entered) <= 1) {
-      s.playerHp = Math.max(0, s.playerHp - dmg);
+    if (!st.aiDamage.has(cellKey(entered))) return;
+    if (st.playerCell && manhattan(st.playerCell, entered) <= 1) {
+      st.playerHp = Math.max(0, st.playerHp - dmg);
     }
   }
+}
+
+function rerollPlayerPath(s: SimState, tun: VortexMapTuning): void {
+  if (!s.playerExit) return;
+  s.playerVariant = randomSpiralVariant(Math.random);
+  s.playerVariant.maxCells = Math.min(
+    s.playerVariant.maxCells,
+    tun.spiralMaxCells + 40
+  );
+  s.playerPath = buildFibonacciSpiralPath(
+    s.playerExit,
+    s.layout.cols,
+    s.layout.rows,
+    s.playerVariant
+  );
 }
 
 export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
@@ -144,10 +205,8 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
   const hoverCellRef = useRef<Cell | null>(null);
   const tuningRef = useRef(tuning);
   const aiPresetRef = useRef(aiPreset);
-  const onEndRef = useRef(onSessionEnd);
   tuningRef.current = tuning;
   aiPresetRef.current = aiPreset;
-  onEndRef.current = onSessionEnd;
 
   const finishOnce = useCallback((r: VortexSessionFinish) => {
     if (endedRef.current) return;
@@ -166,7 +225,12 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
     let layout = computeVortexLayout(canvas.clientWidth, canvas.clientHeight, {
       circleFrac: tuningRef.current.circleFrac,
     });
-    simRef.current = initialSim(layout, sessionStart);
+    simRef.current = initialSim(layout, sessionStart, tuningRef.current);
+
+    const trebleImg = new Image();
+    const bassImg = new Image();
+    trebleImg.src = "/treble.svg";
+    bassImg.src = "/bass.svg";
 
     const resize = () => {
       const parent = canvas.parentElement;
@@ -212,18 +276,24 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       const y = e.clientY - rect.top;
       const cell = pixelToCell(s.layout, x, y);
       if (!cell) return;
+      const tun = tuningRef.current;
 
       if (e.button === 0) {
         if (!s.playerExit && s.ringKeys.has(cellKey(cell))) {
           s.playerExit = cell;
+          s.playerVariant = randomSpiralVariant(Math.random);
+          s.playerVariant.maxCells = Math.min(
+            s.playerVariant.maxCells,
+            tun.spiralMaxCells + 40
+          );
           s.playerPath = buildFibonacciSpiralPath(
             cell,
             s.layout.cols,
             s.layout.rows,
-            tuningRef.current.spiralMaxCells
+            s.playerVariant
           );
           if (s.aiExit && s.planningEnd === null) {
-            s.planningEnd = performance.now() + tuningRef.current.planningHoldMs;
+            s.planningEnd = performance.now() + tun.planningHoldMs;
           }
         }
       } else if (e.button === 2) {
@@ -234,13 +304,47 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       }
     };
 
+    const onWheel = (e: WheelEvent) => {
+      const s = simRef.current;
+      if (!s || s.phase !== "planning" || !s.playerExit) return;
+      e.preventDefault();
+      rerollPlayerPath(s, tuningRef.current);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "KeyR") return;
+      const s = simRef.current;
+      if (!s || s.phase !== "planning" || !s.playerExit) return;
+      e.preventDefault();
+      rerollPlayerPath(s, tuningRef.current);
+    };
+
     const onCtxMenu = (e: MouseEvent) => e.preventDefault();
 
     canvas.addEventListener("mousemove", onMove);
     canvas.addEventListener("mousedown", onMouseDown);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("contextmenu", onCtxMenu);
+    window.addEventListener("keydown", onKeyDown);
 
     let raf = 0;
+
+    const drawSprite = (
+      img: HTMLImageElement,
+      x: number,
+      y: number,
+      cellSize: number
+    ) => {
+      const sz = cellSize * SPRITE_FRAC;
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, x - sz / 2, y - sz / 2, sz, sz);
+      } else {
+        ctx.fillStyle = "#333";
+        ctx.beginPath();
+        ctx.arc(x, y, sz * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
 
     const frame = () => {
       if (endedRef.current) return;
@@ -265,7 +369,11 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         }
       }
 
-      if (s.phase === "planning" || s.phase === "released") {
+      if (
+        s.phase === "planning" ||
+        s.phase === "released" ||
+        s.phase === "attract"
+      ) {
         s.theta += tun.spinRadPerSec * dtSec;
       }
 
@@ -282,11 +390,16 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         const intent = decideVortexAi(snap, aiPresetRef.current);
         if (intent.pickExit && !s.aiExit) {
           s.aiExit = intent.pickExit;
+          s.aiVariant = randomSpiralVariant(Math.random);
+          s.aiVariant.maxCells = Math.min(
+            s.aiVariant.maxCells,
+            tun.spiralMaxCells + 40
+          );
           s.aiPath = buildFibonacciSpiralPath(
             intent.pickExit,
             layout.cols,
             layout.rows,
-            tun.spiralMaxCells
+            s.aiVariant
           );
           if (s.playerExit && s.planningEnd === null) {
             s.planningEnd = now + tun.planningHoldMs;
@@ -304,11 +417,16 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
           const keys = [...s.ringKeys];
           const pick = keys[Math.floor(Math.random() * keys.length)]!;
           s.playerExit = parseCellKey(pick);
+          s.playerVariant = randomSpiralVariant(Math.random);
+          s.playerVariant.maxCells = Math.min(
+            s.playerVariant.maxCells,
+            tun.spiralMaxCells + 40
+          );
           s.playerPath = buildFibonacciSpiralPath(
             s.playerExit,
             s.layout.cols,
             s.layout.rows,
-            tun.spiralMaxCells
+            s.playerVariant
           );
           if (s.aiExit && s.planningEnd === null) {
             s.planningEnd = now + tun.planningHoldMs;
@@ -322,31 +440,41 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
           s.aiExit
         ) {
           s.phase = "released";
+          s.releasedWallAt = now;
           const omega = tun.spinRadPerSec;
-          const v = omega * layout.R;
-          const cps = v / layout.cellSize;
-          s.playerPathSpeed = Math.max(1.8, cps * 0.85);
-          s.aiPathSpeed = Math.max(1.8, cps * 0.85);
+          const cps = launchPathCellsPerSec(
+            layout,
+            omega,
+            tun.launchVelocityMul,
+            tun.launchMassKg
+          );
+          s.playerPathSpeed = Math.max(4, cps);
+          s.aiPathSpeed = Math.max(4, cps);
           s.playerOnRing = false;
           s.aiOnRing = false;
-          s.playerCell = s.playerPath[0] ?? s.playerExit;
-          s.aiCell = s.aiPath[0] ?? s.aiExit;
-          s.lastPlayerPathIdx = 0;
-          s.lastAiPathIdx = 0;
+          s.lastPlayerPathIdx = -1;
+          s.lastAiPathIdx = -1;
           s.playerPathProg = 0;
           s.aiPathProg = 0;
+          s.playerCell = s.playerPath[0] ?? s.playerExit;
+          s.aiCell = s.aiPath[0] ?? s.aiExit;
         }
       }
 
-      if (s.phase === "released") {
-        s.playerPathProg += s.playerPathSpeed * dtSec;
-        s.aiPathProg += s.aiPathSpeed * dtSec;
-
-        const pi = Math.min(
-          s.playerPath.length - 1,
-          Math.floor(s.playerPathProg)
+      if (s.phase === "released" && s.releasedWallAt !== null) {
+        const maxPP = Math.max(0, s.playerPath.length - 1);
+        const maxAP = Math.max(0, s.aiPath.length - 1);
+        s.playerPathProg = Math.min(
+          maxPP,
+          s.playerPathProg + s.playerPathSpeed * dtSec
         );
-        const ai = Math.min(s.aiPath.length - 1, Math.floor(s.aiPathProg));
+        s.aiPathProg = Math.min(
+          maxAP,
+          s.aiPathProg + s.aiPathSpeed * dtSec
+        );
+
+        const pi = Math.min(maxPP, Math.floor(s.playerPathProg + 1e-6));
+        const ai = Math.min(maxAP, Math.floor(s.aiPathProg + 1e-6));
         if (pi !== s.lastPlayerPathIdx && s.playerPath.length > 0) {
           const entered = s.playerPath[pi]!;
           s.playerCell = entered;
@@ -358,6 +486,21 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
           s.aiCell = entered;
           tryDamage("ai", entered, s, tun.damageAmount);
           s.lastAiPathIdx = ai;
+        }
+
+        if (now >= s.releasedWallAt + tun.releasedToAttractMs) {
+          s.phase = "attract";
+          s.attractWallAt = now;
+          s.playerOnRing = true;
+          s.aiOnRing = true;
+          s.playerPathSpeed = 0;
+          s.aiPathSpeed = 0;
+        }
+      }
+
+      if (s.phase === "attract" && s.attractWallAt !== null) {
+        if (now >= s.attractWallAt + tun.attractDurationMs) {
+          beginPlanningRound(s, now);
         }
       }
 
@@ -434,8 +577,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         }
       }
 
-      const blink =
-        s.phase === "planning" && Math.sin(now / 120) > 0;
+      const blink = s.phase === "planning" && Math.sin(now / 120) > 0;
       const hc = hoverCellRef.current;
       if (
         blink &&
@@ -456,59 +598,30 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       const pp = ringAttachmentPx(layout, s.theta, "player");
       const ap = ringAttachmentPx(layout, s.theta, "ai");
 
-      const drawTrebleClef = (x: number, y: number) => {
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.strokeStyle = "#1a1a1a";
-        ctx.lineWidth = 1.35;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.beginPath();
-        ctx.moveTo(0, -14);
-        ctx.bezierCurveTo(10, -18, 14, -4, 8, 6);
-        ctx.bezierCurveTo(2, 14, -6, 12, -4, 2);
-        ctx.bezierCurveTo(-2, -8, 6, -12, 0, -14);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(-2, -10);
-        ctx.lineTo(-2, 16);
-        ctx.stroke();
-        ctx.restore();
-      };
-
-      const drawBassClef = (x: number, y: number) => {
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.strokeStyle = "#1a1a1a";
-        ctx.lineWidth = 1.35;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.arc(-2, 2, 9, 0.35, Math.PI * 1.85);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(6, -4, 4, 0.9, Math.PI * 1.45);
-        ctx.stroke();
-        ctx.fillStyle = "#1a1a1a";
-        ctx.beginPath();
-        ctx.arc(-1, 10, 1.6, 0, Math.PI * 2);
-        ctx.arc(5, 10, 1.6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      };
-
+      let playerPx: { x: number; y: number };
+      let aiPx: { x: number; y: number };
       if (s.playerOnRing) {
-        drawTrebleClef(pp.x, pp.y);
+        playerPx = pp;
+      } else if (s.phase === "released" && s.playerPath.length > 0) {
+        playerPx = pathLerpPx(layout, s.playerPath, s.playerPathProg);
       } else if (s.playerCell) {
-        const pc = cellCenterPx(layout, s.playerCell);
-        drawTrebleClef(pc.x, pc.y);
+        playerPx = cellCenterPx(layout, s.playerCell);
+      } else {
+        playerPx = pp;
       }
 
       if (s.aiOnRing) {
-        drawBassClef(ap.x, ap.y);
+        aiPx = ap;
+      } else if (s.phase === "released" && s.aiPath.length > 0) {
+        aiPx = pathLerpPx(layout, s.aiPath, s.aiPathProg);
       } else if (s.aiCell) {
-        const ac = cellCenterPx(layout, s.aiCell);
-        drawBassClef(ac.x, ac.y);
+        aiPx = cellCenterPx(layout, s.aiCell);
+      } else {
+        aiPx = ap;
       }
+
+      drawSprite(trebleImg, playerPx.x, playerPx.y, cellSize);
+      drawSprite(bassImg, aiPx.x, aiPx.y, cellSize);
 
       const inCd = s.phase === "countdown" && now < s.countdownEnd;
       if (inCd) {
@@ -526,6 +639,38 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         const label = String(n);
         ctx.strokeText(label, w / 2, h / 2);
         ctx.fillText(label, w / 2, h / 2);
+      }
+
+      if (
+        s.phase === "released" &&
+        s.releasedWallAt !== null &&
+        now < s.releasedWallAt + RELEASE_LABEL_MS
+      ) {
+        const flash = Math.sin(now / 100) > 0;
+        if (flash) {
+          ctx.font = `bold ${Math.max(28, Math.min(w, h) * 0.07)}px system-ui, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = "rgba(0,0,0,0.55)";
+          ctx.fillStyle = "rgba(255, 90, 40, 0.95)";
+          ctx.strokeText("RELEASE", w / 2, h * 0.12);
+          ctx.fillText("RELEASE", w / 2, h * 0.12);
+        }
+      }
+
+      if (s.phase === "attract") {
+        const flash = Math.sin(now / 120) > 0;
+        if (flash) {
+          ctx.font = `bold ${Math.max(28, Math.min(w, h) * 0.07)}px system-ui, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = "rgba(0,0,0,0.5)";
+          ctx.fillStyle = "rgba(60, 100, 220, 0.95)";
+          ctx.strokeText("ATTRACT", w / 2, h * 0.12);
+          ctx.fillText("ATTRACT", w / 2, h * 0.12);
+        }
       }
 
       const barY = h - 22;
@@ -576,7 +721,9 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       ro.disconnect();
       canvas.removeEventListener("mousemove", onMove);
       canvas.removeEventListener("mousedown", onMouseDown);
+      canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onCtxMenu);
+      window.removeEventListener("keydown", onKeyDown);
     };
   }, [finishOnce]);
 

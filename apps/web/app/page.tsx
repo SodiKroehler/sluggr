@@ -416,8 +416,8 @@ export default function HomePage() {
             background: "var(--panel)",
           }}
         >
-          Vortex · Left-click ring cell to exit · Yellow = your spiral path ·
-          Right-click toggles your damage tile · Release after hold
+          Vortex · Ring exit + yellow spiral · R or scroll = new spiral ·
+          Right-click damage tile · RELEASE then fast path · ATTRACT returns to ring
         </p>
       </div>
     );
