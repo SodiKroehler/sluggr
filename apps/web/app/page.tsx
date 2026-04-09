@@ -1,8 +1,10 @@
 "use client";
 
-import { GameCanvas, type SessionFinish } from "@/components/GameCanvas";
-import { DEFAULT_MAP } from "@/lib/mapConfig";
-import { rollMatchSetup } from "@/lib/matchRng";
+import {
+  VortexCanvas,
+  type VortexSessionFinish,
+} from "@/components/VortexCanvas";
+import { MAPS, MAP_LIST, type MapId } from "@/lib/mapRegistry";
 import {
   createNewToken,
   parsePlayerToken,
@@ -21,7 +23,7 @@ import {
   supportsSaveFilePicker,
   writeTextToHandle,
 } from "@/lib/tokenFileAccess";
-import { DEFAULT_COMBAT } from "@/lib/weaponConfig";
+import { pickOpponent, type AiTrainingPreset } from "@locket/matching";
 import {
   useCallback,
   useMemo,
@@ -32,9 +34,12 @@ import {
 
 const TOKEN_FILENAME = "me.sluggr";
 
-type Phase = "token" | "play" | "ended";
+type Phase = "token" | "lobby" | "mapSelect" | "play" | "ended";
 
-function applySessionResult(token: PlayerToken, finish: SessionFinish): PlayerToken {
+function applySessionResult(
+  token: PlayerToken,
+  finish: VortexSessionFinish
+): PlayerToken {
   const next = { ...token, record: { ...token.record } };
   if (finish.winner === "draw") return next;
   if (finish.winner === "player") next.record.wins += 1;
@@ -74,30 +79,27 @@ const squareBtn: CSSProperties = {
 export default function HomePage() {
   const [phase, setPhase] = useState<Phase>("token");
   const [profile, setProfile] = useState<PlayerToken | null>(null);
-  const [lastFinish, setLastFinish] = useState<SessionFinish | null>(null);
+  const [lastFinish, setLastFinish] = useState<VortexSessionFinish | null>(
+    null
+  );
   const [tokenSaveFailed, setTokenSaveFailed] = useState(false);
   const [sessionKey, setSessionKey] = useState(0);
+  const [selectedMapId, setSelectedMapId] = useState<MapId>("vortex");
   const tokenHandleRef = useRef<FileSystemFileHandle | null>(null);
   const legacyFileInputRef = useRef<HTMLInputElement>(null);
 
-  const { aiPreset, mapConfig } = useMemo(() => {
-    const rolled = rollMatchSetup(
-      DEFAULT_MAP.halfWidth,
-      DEFAULT_MAP.halfHeight,
-      DEFAULT_MAP.placeCubeSize
-    );
-    return {
-      aiPreset: rolled.aiPreset,
-      mapConfig: { ...DEFAULT_MAP, ...rolled.rolledMap },
-    };
-  }, [sessionKey]); // eslint-disable-line react-hooks/exhaustive-deps -- sessionKey rerolls match
-  const weaponConfig = useMemo(() => ({ ...DEFAULT_COMBAT }), []);
+  const aiPreset: AiTrainingPreset = useMemo(() => {
+    const opp = pickOpponent();
+    return opp.source === "ai_training" ? opp.preset : "medium";
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reroll opponent when sessionKey bumps
+  }, [sessionKey]);
+
+  const mapDef = MAPS[selectedMapId];
 
   const applyToken = useCallback((parsed: PlayerToken) => {
     writeSessionProfile(parsed);
     setProfile(parsed);
-    setSessionKey((k) => k + 1);
-    setPhase("play");
+    setPhase("lobby");
   }, []);
 
   const onCreateNewToken = useCallback(() => {
@@ -177,7 +179,7 @@ export default function HomePage() {
   );
 
   const onSessionEnd = useCallback(
-    async (finish: SessionFinish) => {
+    async (finish: VortexSessionFinish) => {
       setLastFinish(finish);
       setTokenSaveFailed(false);
       const current = readSessionProfile();
@@ -194,11 +196,27 @@ export default function HomePage() {
     [tryPersistTokenToFile]
   );
 
-  const replayMatch = useCallback(() => {
+  const enterArena = useCallback(() => {
+    setPhase("mapSelect");
+  }, []);
+
+  const startMap = useCallback((id: MapId) => {
+    setSelectedMapId(id);
+    setSessionKey((k) => k + 1);
+    setPhase("play");
+  }, []);
+
+  const rematch = useCallback(() => {
     setLastFinish(null);
     setTokenSaveFailed(false);
     setSessionKey((k) => k + 1);
     setPhase("play");
+  }, []);
+
+  const chooseNewMap = useCallback(() => {
+    setLastFinish(null);
+    setTokenSaveFailed(false);
+    setPhase("mapSelect");
   }, []);
 
   const manualDownloadToken = useCallback(() => {
@@ -279,6 +297,97 @@ export default function HomePage() {
     );
   }
 
+  if (phase === "lobby" && profile) {
+    return (
+      <main
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+          gap: 24,
+          background: "var(--page-bg)",
+        }}
+      >
+        <p style={{ margin: 0, color: "var(--muted)" }}>
+          Signed in · {profile.record.wins}W / {profile.record.losses}L
+        </p>
+        <button
+          type="button"
+          onClick={enterArena}
+          style={{
+            padding: "18px 36px",
+            borderRadius: 4,
+            border: "none",
+            background: "var(--accent-dark)",
+            color: "#f6faf7",
+            cursor: "pointer",
+            fontWeight: 700,
+            fontSize: "clamp(1rem, 2.5vmin, 1.15rem)",
+          }}
+        >
+          Enter arena
+        </button>
+      </main>
+    );
+  }
+
+  if (phase === "mapSelect" && profile) {
+    return (
+      <main
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+          gap: 20,
+          background: "var(--page-bg)",
+        }}
+      >
+        <h2 style={{ margin: 0, color: "var(--accent-dark)" }}>Choose map</h2>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 16,
+            justifyContent: "center",
+            maxWidth: 560,
+          }}
+        >
+          {MAP_LIST.map((id) => {
+            const m = MAPS[id];
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => startMap(id)}
+                style={{
+                  padding: "20px 28px",
+                  borderRadius: 8,
+                  border: "2px solid var(--accent-dark)",
+                  background: "var(--panel)",
+                  color: "var(--accent-dark)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  minWidth: 200,
+                }}
+              >
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>{m.label}</div>
+                <div style={{ fontSize: 13, color: "var(--muted)" }}>
+                  {m.description}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </main>
+    );
+  }
+
   if (phase === "play" && profile) {
     return (
       <div
@@ -286,13 +395,12 @@ export default function HomePage() {
           height: "100vh",
           display: "flex",
           flexDirection: "column",
-          cursor: "none",
         }}
       >
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          <GameCanvas
-            mapConfig={mapConfig}
-            weaponConfig={weaponConfig}
+          <VortexCanvas
+            key={sessionKey}
+            tuning={mapDef.tuning}
             aiPreset={aiPreset}
             onSessionEnd={onSessionEnd}
           />
@@ -308,8 +416,8 @@ export default function HomePage() {
             background: "var(--panel)",
           }}
         >
-          WASD move · Space jump (toward aim) · Left shoot · Right-click place · Hidden
-          cursor · Red danger zones
+          Vortex · Left-click ring cell to exit · Yellow = your spiral path ·
+          Right-click toggles your damage tile · Release after hold
         </p>
       </div>
     );
@@ -318,7 +426,7 @@ export default function HomePage() {
   if (phase === "ended" && profile && lastFinish) {
     const msg =
       lastFinish.winner === "draw"
-        ? "Draw — equal health at time."
+        ? "Draw."
         : lastFinish.winner === "player"
           ? "You win."
           : "You lose.";
@@ -371,23 +479,40 @@ export default function HomePage() {
             </button>
           </div>
         ) : null}
-        <button
-          type="button"
-          onClick={replayMatch}
-          style={{
-            marginTop: 8,
-            padding: "14px 28px",
-            borderRadius: 4,
-            border: "none",
-            background: "var(--accent-dark)",
-            color: "#f6faf7",
-            cursor: "pointer",
-            fontWeight: 600,
-            fontSize: 15,
-          }}
-        >
-          Replay
-        </button>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+          <button
+            type="button"
+            onClick={rematch}
+            style={{
+              padding: "14px 28px",
+              borderRadius: 4,
+              border: "none",
+              background: "var(--accent-dark)",
+              color: "#f6faf7",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 15,
+            }}
+          >
+            Rematch
+          </button>
+          <button
+            type="button"
+            onClick={chooseNewMap}
+            style={{
+              padding: "14px 28px",
+              borderRadius: 4,
+              border: "2px solid var(--accent-dark)",
+              background: "var(--panel)",
+              color: "var(--accent-dark)",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 15,
+            }}
+          >
+            Play another map
+          </button>
+        </div>
       </main>
     );
   }
