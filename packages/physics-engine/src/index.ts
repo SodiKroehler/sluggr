@@ -105,6 +105,8 @@ function toSimulationBody(
 
 export function createSimulation(config: SimulationConfig): SimulationApi {
   const engine = Matter.Engine.create({ gravity: { x: 0, y: 0, scale: 0 } });
+  engine.positionIterations = 10;
+  engine.velocityIterations = 8;
   const world = engine.world;
 
   const hw = config.halfWidth;
@@ -199,7 +201,11 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
     step(deltaMs: number) {
       if (destroyed) return;
       const dt = Math.min(deltaMs / 1000, 1 / 30);
-      Matter.Engine.update(engine, dt * 1000);
+      const subSteps = 4;
+      const stepMs = (dt * 1000) / subSteps;
+      for (let i = 0; i < subSteps; i++) {
+        Matter.Engine.update(engine, stepMs);
+      }
     },
     getBodies() {
       if (destroyed) return [];

@@ -82,6 +82,70 @@ function segmentHitsRotatedSquare(
   return false;
 }
 
+/** Local half-extents of a shield rectangle from world vertices. */
+function shieldLocalHalfExtents(body: PhysBody): { halfW: number; halfH: number } {
+  const c = Math.cos(-body.angle);
+  const s = Math.sin(-body.angle);
+  let maxLx = 0;
+  let maxLy = 0;
+  for (const v of body.vertices) {
+    const dx = v.x - body.x;
+    const dy = v.y - body.y;
+    const lx = dx * c - dy * s;
+    const ly = dx * s + dy * c;
+    maxLx = Math.max(maxLx, Math.abs(lx));
+    maxLy = Math.max(maxLy, Math.abs(ly));
+  }
+  return { halfW: maxLx, halfH: maxLy };
+}
+
+function circleHitsRotatedRect(
+  bx: number,
+  by: number,
+  br: number,
+  px: number,
+  py: number,
+  halfW: number,
+  halfH: number,
+  angle: number
+): boolean {
+  const dx = bx - px;
+  const dy = by - py;
+  const c = Math.cos(-angle);
+  const s = Math.sin(-angle);
+  const lx = dx * c - dy * s;
+  const ly = dx * s + dy * c;
+  const qx = Math.max(-halfW, Math.min(halfW, lx));
+  const qy = Math.max(-halfH, Math.min(halfH, ly));
+  const ex = lx - qx;
+  const ey = ly - qy;
+  return ex * ex + ey * ey <= br * br + 1e-4;
+}
+
+function segmentHitsRotatedRect(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  br: number,
+  px: number,
+  py: number,
+  halfW: number,
+  halfH: number,
+  angle: number
+): boolean {
+  const segLen = Math.hypot(x1 - x0, y1 - y0);
+  const spacing = Math.max(br * 0.35, 1.25);
+  const steps = Math.min(32, Math.max(1, Math.ceil(segLen / spacing)));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const bx = x0 + (x1 - x0) * t;
+    const by = y0 + (y1 - y0) * t;
+    if (circleHitsRotatedRect(bx, by, br, px, py, halfW, halfH, angle)) return true;
+  }
+  return false;
+}
+
 /** Gun: line from square center through front face, `pastEdge` beyond edge; muzzle past tip for spawn. */
 function gunMuzzle(
   b: PhysBody,
@@ -244,8 +308,8 @@ export function GameCanvas({
       halfWidth: mapConfig.halfWidth,
       halfHeight: mapConfig.halfHeight,
       squareSize: mapConfig.squareSize,
-      player: { x: 0, y: -hh + inset, angle: Math.PI / 2 },
-      ai: { x: 0, y: hh - inset, angle: -Math.PI / 2 },
+      player: { x: 0, y: hh - inset, angle: -Math.PI / 2 },
+      ai: { x: 0, y: -hh + inset, angle: Math.PI / 2 },
       shields: mapConfig.shields,
       frictionAir: 0.014,
     });
@@ -460,6 +524,7 @@ export function GameCanvas({
       const aiIntent = decideAiAction(snapshot, aiPreset);
 
       const keys = keysRef.current;
+      // Fixed world axes (same as the view): W/S = toward top/bottom of the window, A/D = left/right. Aim is mouse-only.
       let mx = 0;
       let my = 0;
       if (keys.w) my -= 1;
@@ -579,8 +644,13 @@ export function GameCanvas({
           "ai"
         );
         if (id) {
-          aiGunReadyAt =
-            now + gcfg.cooldownMs * AI_FIRE_COOLDOWN_FRACTION;
+          const aiCdFrac =
+            aiPreset === "hard"
+              ? 0.12
+              : aiPreset === "medium"
+                ? 0.2
+                : Math.max(AI_FIRE_COOLDOWN_FRACTION, 0.45);
+          aiGunReadyAt = now + gcfg.cooldownMs * aiCdFrac;
         }
       }
 
@@ -641,12 +711,38 @@ export function GameCanvas({
         const now2 = performance.now();
         const dmg = gcfg.damage;
         const brHit = gcfg.hitRadius;
+        const shields = after.filter((b) => b.label === "shield");
         for (const b of after) {
           if (b.label !== "bullet" || !b.bulletOwner) continue;
-          const target = b.bulletOwner === "player" ? a2 : p2;
           const prev = bulletPosBeforeStep.get(b.id);
           const x0 = prev?.x ?? b.x;
           const y0 = prev?.y ?? b.y;
+          let hitWall = false;
+          for (const sh of shields) {
+            const { halfW, halfH } = shieldLocalHalfExtents(sh);
+            if (
+              segmentHitsRotatedRect(
+                x0,
+                y0,
+                b.x,
+                b.y,
+                brHit,
+                sh.x,
+                sh.y,
+                halfW,
+                halfH,
+                sh.angle
+              )
+            ) {
+              hitWall = true;
+              break;
+            }
+          }
+          if (hitWall) {
+            sim.removeBullet(b.id);
+            continue;
+          }
+          const target = b.bulletOwner === "player" ? a2 : p2;
           if (
             segmentHitsRotatedSquare(
               x0,

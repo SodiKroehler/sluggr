@@ -75,83 +75,100 @@ export function decideAiAction(
   const wanderY = Math.cos(snapshot.tick * 0.017 + snapshot.opponentHp * 0.07);
 
   if (preset === "easy") {
-    const chase = dist > 180 ? 0.25 : 0;
-    const mx = clamp(wanderX * 0.85 + dirToOpp.x * chase, -1, 1);
-    const my = clamp(wanderY * 0.85 + dirToOpp.y * chase, -1, 1);
+    const chase = dist > 200 ? 0.35 : dist > 120 ? 0.12 : 0;
+    const mx = clamp(wanderX * 0.75 + dirToOpp.x * chase, -1, 1);
+    const my = clamp(wanderY * 0.75 + dirToOpp.y * chase, -1, 1);
+    const aimOk = dot(forward, dirToOpp) > 0.35;
     const attack =
-      dist < 140 && snapshot.tick % 90 === 0 && snapshot.tick % 180 !== 0;
+      dist < 260 &&
+      aimOk &&
+      (snapshot.tick % 55 === 0 || (dist < 160 && snapshot.tick % 28 === 0));
     return {
       moveX: mx,
       moveY: my,
-      jump: dist < 100 && snapshot.tick % 200 === 17,
+      jump: dist < 120 && snapshot.tick % 200 === 17,
       attack,
     };
   }
 
   if (preset === "medium") {
-    const ideal = 220;
+    const ideal = 240;
     let mx = dirToOpp.x;
     let my = dirToOpp.y;
-    if (dist < ideal - 40) {
-      mx = -dirToOpp.x * 0.7;
-      my = -dirToOpp.y * 0.7;
-    } else if (dist > ideal + 60) {
+    if (dist < ideal - 50) {
+      mx = -dirToOpp.x * 0.75;
+      my = -dirToOpp.y * 0.75;
+    } else if (dist > ideal + 70) {
       mx = dirToOpp.x;
       my = dirToOpp.y;
     } else {
-      const s = 0.35;
+      const s = 0.42;
       const side = wanderX >= 0 ? 1 : -1;
-      mx = right.x * s * side;
-      my = right.y * s * side;
+      mx = right.x * s * side + dirToOpp.x * 0.15;
+      my = right.y * s * side + dirToOpp.y * 0.15;
     }
     mx = clamp(mx, -1, 1);
     my = clamp(my, -1, 1);
-    const attack = dist < 160 && dot(forward, dirToOpp) > 0.55;
+    const aim = dot(forward, dirToOpp);
+    const attack =
+      dist < 300 &&
+      (aim > 0.42 || (dist < 200 && aim > 0.28 && snapshot.tick % 6 === 0));
     return {
       moveX: mx,
       moveY: my,
-      jump: dist < 120 && snapshot.tick % 55 === 0,
+      jump: dist < 140 && snapshot.tick % 48 === 0,
       attack,
     };
   }
 
   const aimScore = dot(forward, dirToOpp);
-  let mx = dirToOpp.x * 0.95;
-  let my = dirToOpp.y * 0.95;
-  if (snapshot.opponentKnifeExtended && aimScore < 0.25) {
+  let mx = dirToOpp.x;
+  let my = dirToOpp.y;
+  if (snapshot.opponentKnifeExtended && aimScore < 0.22) {
     const perp = { x: -dirToOpp.y, y: dirToOpp.x };
     const dodge = snapshot.tick % 2 === 0 ? 1 : -1;
     mx = clamp(perp.x * dodge, -1, 1);
     my = clamp(perp.y * dodge, -1, 1);
   } else if (
     snapshot.opponentKnifeRecoverySec > 0 &&
-    snapshot.opponentKnifeRecoverySec < 0.45 &&
-    dist < 280
+    snapshot.opponentKnifeRecoverySec < 0.5 &&
+    dist < 320
   ) {
     mx = dirToOpp.x;
     my = dirToOpp.y;
-  } else if (dist < 100) {
+  } else if (dist < 90) {
     const back = { x: -dirToOpp.x, y: -dirToOpp.y };
-    mx = back.x;
-    my = back.y;
+    mx = back.x * 0.92;
+    my = back.y * 0.92;
+  } else if (dist > 260) {
+    mx = dirToOpp.x * 1;
+    my = dirToOpp.y * 1;
   }
 
   mx = clamp(mx, -1, 1);
   my = clamp(my, -1, 1);
 
   const punishWindow =
-    snapshot.opponentKnifeRecoverySec > 0.05 &&
-    snapshot.opponentKnifeRecoverySec < 0.35;
+    snapshot.opponentKnifeRecoverySec > 0.04 &&
+    snapshot.opponentKnifeRecoverySec < 0.42;
+  const spray =
+    dist < 360 &&
+    aimScore > 0.38 &&
+    snapshot.tick % 5 === 0 &&
+    snapshot.tick % 11 !== 0;
   const attack =
-    (dist < 200 && aimScore > 0.75) || (punishWindow && dist < 240);
+    (dist < 260 && aimScore > 0.52) ||
+    (punishWindow && dist < 280) ||
+    (dist < 340 && aimScore > 0.72) ||
+    spray;
 
   return {
     moveX: mx,
     moveY: my,
     jump:
       snapshot.opponentKnifeExtended &&
-      dist < 200 &&
-      aimScore > 0.4 &&
+      dist < 220 &&
+      aimScore > 0.35 &&
       snapshot.tick % 3 === 0,
     attack,
   };
