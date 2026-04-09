@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useRef } from "react";
 import {
   AI_FIRE_COOLDOWN_FRACTION,
+  ARENA_COUNTDOWN_MS,
   DANGER_ZONE_DAMAGE_INTERVAL_MS,
   HEAL_ZONE_INTERVAL_MS,
   LENS_PASS_SPEED_MULT,
@@ -302,6 +303,11 @@ export function GameCanvas({
 
     const hh = mapConfig.halfHeight;
     const inset = mapConfig.squareSize * 0.75;
+    const playerSpawnX = 0;
+    const playerSpawnY = hh - inset;
+    const aiSpawnX = 0;
+    const aiSpawnY = -hh + inset;
+    const spawnLockHalf = mapConfig.squareSize * 0.48;
 
     endedRef.current = false;
     const sim = createSimulation({
@@ -429,7 +435,10 @@ export function GameCanvas({
       if (endedRef.current) return;
       const nowWall = performance.now();
       const elapsedSession = nowWall - sessionStart;
-      const timeLeftSec = Math.max(0, (SESSION_DURATION_MS - elapsedSession) / 1000);
+      const countdownRemainMs = Math.max(0, ARENA_COUNTDOWN_MS - elapsedSession);
+      const inCountdown = countdownRemainMs > 0;
+      const matchElapsedMs = Math.max(0, elapsedSession - ARENA_COUNTDOWN_MS);
+      const timeLeftSec = Math.max(0, (SESSION_DURATION_MS - matchElapsedMs) / 1000);
       const dtMs = Math.min(ts - lastTs, 32);
       lastTs = ts;
 
@@ -437,24 +446,26 @@ export function GameCanvas({
       const arenaHw = mapConfig.halfWidth;
       const arenaHh = mapConfig.halfHeight;
       const zpad = 2;
-      for (const z of dzRun) {
-        z.x += z.vx * dtSec;
-        z.y += z.vy * dtSec;
-        if (z.x - z.halfWidth < -arenaHw + zpad) {
-          z.x = -arenaHw + zpad + z.halfWidth;
-          z.vx *= -1;
-        }
-        if (z.x + z.halfWidth > arenaHw - zpad) {
-          z.x = arenaHw - zpad - z.halfWidth;
-          z.vx *= -1;
-        }
-        if (z.y - z.halfHeight < -arenaHh + zpad) {
-          z.y = -arenaHh + zpad + z.halfHeight;
-          z.vy *= -1;
-        }
-        if (z.y + z.halfHeight > arenaHh - zpad) {
-          z.y = arenaHh - zpad - z.halfHeight;
-          z.vy *= -1;
+      if (!inCountdown) {
+        for (const z of dzRun) {
+          z.x += z.vx * dtSec;
+          z.y += z.vy * dtSec;
+          if (z.x - z.halfWidth < -arenaHw + zpad) {
+            z.x = -arenaHw + zpad + z.halfWidth;
+            z.vx *= -1;
+          }
+          if (z.x + z.halfWidth > arenaHw - zpad) {
+            z.x = arenaHw - zpad - z.halfWidth;
+            z.vx *= -1;
+          }
+          if (z.y - z.halfHeight < -arenaHh + zpad) {
+            z.y = -arenaHh + zpad + z.halfHeight;
+            z.vy *= -1;
+          }
+          if (z.y + z.halfHeight > arenaHh - zpad) {
+            z.y = arenaHh - zpad - z.halfHeight;
+            z.vy *= -1;
+          }
         }
       }
 
@@ -481,12 +492,14 @@ export function GameCanvas({
         y: (ms.y - cy) / scale,
       };
 
-      if (placeBlockTriggerRef.current) {
+      if (!inCountdown && placeBlockTriggerRef.current) {
         placeBlockTriggerRef.current = false;
         const cell = mapConfig.placeCubeSize;
         const { x: gx, y: gy } = snapPlaceGridCenter(player.x, player.y, cell);
         const id = sim.placeCube(gx, gy, cell);
         if (id) playerPlacedBlockSpawnMs.set(id, nowWall);
+      } else if (inCountdown) {
+        placeBlockTriggerRef.current = false;
       }
 
       for (const [blockId, spawn] of playerPlacedBlockSpawnMs) {
@@ -524,76 +537,81 @@ export function GameCanvas({
       const aiIntent = decideAiAction(snapshot, aiPreset);
 
       const keys = keysRef.current;
-      // Fixed world axes (same as the view): W/S = toward top/bottom of the window, A/D = left/right. Aim is mouse-only.
-      let mx = 0;
-      let my = 0;
-      if (keys.w) my -= 1;
-      if (keys.s) my += 1;
-      if (keys.a) mx -= 1;
-      if (keys.d) mx += 1;
-      const mlen = Math.hypot(mx, my);
-      if (mlen > 1e-6) {
-        mx /= mlen;
-        my /= mlen;
-      }
-      sim.applyForce(
-        "player",
-        mx * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER,
-        my * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER
-      );
-
-      if (keys.space && !jumpConsumedRef.current) {
-        const dx = worldMouse.x - player.x;
-        const dy = worldMouse.y - player.y;
-        const jl = Math.hypot(dx, dy);
-        let jx = 0;
-        let jy = -1;
-        if (jl > 6) {
-          jx = dx / jl;
-          jy = dy / jl;
+      if (!inCountdown) {
+        // Fixed world axes (same as the view): W/S = toward top/bottom of the window, A/D = left/right. Aim is mouse-only.
+        let mx = 0;
+        let my = 0;
+        if (keys.w) my -= 1;
+        if (keys.s) my += 1;
+        if (keys.a) mx -= 1;
+        if (keys.d) mx += 1;
+        const mlen = Math.hypot(mx, my);
+        if (mlen > 1e-6) {
+          mx /= mlen;
+          my /= mlen;
         }
         sim.applyForce(
           "player",
-          jx * weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER,
-          jy * weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER
+          mx * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER,
+          my * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER
         );
-        jumpConsumedRef.current = true;
-      }
-      if (!keys.space) jumpConsumedRef.current = false;
 
-      sim.applyForce(
-        "ai",
-        aiIntent.moveX * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER,
-        aiIntent.moveY * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER
-      );
-
-      if (aiIntent.jump && tick % 14 === 0) {
-        const jdx = player.x - aiBody.x;
-        const jdy = player.y - aiBody.y;
-        const jl = Math.hypot(jdx, jdy);
-        if (jl > 6) {
+        if (keys.space && !jumpConsumedRef.current) {
+          const dx = worldMouse.x - player.x;
+          const dy = worldMouse.y - player.y;
+          const jl = Math.hypot(dx, dy);
+          let jx = 0;
+          let jy = -1;
+          if (jl > 6) {
+            jx = dx / jl;
+            jy = dy / jl;
+          }
           sim.applyForce(
-            "ai",
-            (jdx / jl) *
-              weaponConfig.jumpImpulse *
-              MOVE_SPEED_MULTIPLIER *
-              0.82,
-            (jdy / jl) *
-              weaponConfig.jumpImpulse *
-              MOVE_SPEED_MULTIPLIER *
-              0.82
+            "player",
+            jx * weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER,
+            jy * weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER
           );
-        } else {
-          sim.applyForce(
-            "ai",
-            0,
-            -weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER * 0.82
-          );
+          jumpConsumedRef.current = true;
         }
+        if (!keys.space) jumpConsumedRef.current = false;
+
+        sim.applyForce(
+          "ai",
+          aiIntent.moveX * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER,
+          aiIntent.moveY * weaponConfig.moveForce * MOVE_SPEED_MULTIPLIER
+        );
+
+        if (aiIntent.jump && tick % 14 === 0) {
+          const jdx = player.x - aiBody.x;
+          const jdy = player.y - aiBody.y;
+          const jl = Math.hypot(jdx, jdy);
+          if (jl > 6) {
+            sim.applyForce(
+              "ai",
+              (jdx / jl) *
+                weaponConfig.jumpImpulse *
+                MOVE_SPEED_MULTIPLIER *
+                0.82,
+              (jdy / jl) *
+                weaponConfig.jumpImpulse *
+                MOVE_SPEED_MULTIPLIER *
+                0.82
+            );
+          } else {
+            sim.applyForce(
+              "ai",
+              0,
+              -weaponConfig.jumpImpulse * MOVE_SPEED_MULTIPLIER * 0.82
+            );
+          }
+        }
+      } else {
+        if (!keys.space) jumpConsumedRef.current = false;
       }
 
-      const aiAttackEdge = aiIntent.attack && !aiAttackHeldRef.current;
-      aiAttackHeldRef.current = aiIntent.attack;
+      const aiAttackEdge =
+        !inCountdown && aiIntent.attack && !aiAttackHeldRef.current;
+      aiAttackHeldRef.current = inCountdown ? false : aiIntent.attack;
 
       const aimPlayer = Math.atan2(
         worldMouse.y - player.y,
@@ -609,7 +627,12 @@ export function GameCanvas({
       const pFire = preBodies.find((b) => b.label === "player");
       const aFire = preBodies.find((b) => b.label === "ai");
 
-      if (fireTriggerRef.current && now >= playerGunReadyAt && pFire) {
+      if (
+        !inCountdown &&
+        fireTriggerRef.current &&
+        now >= playerGunReadyAt &&
+        pFire
+      ) {
         const m = gunMuzzle(
           pFire,
           squareHalf,
@@ -628,7 +651,7 @@ export function GameCanvas({
       }
       fireTriggerRef.current = false;
 
-      if (aiAttackEdge && now >= aiGunReadyAt && aFire) {
+      if (!inCountdown && aiAttackEdge && now >= aiGunReadyAt && aFire) {
         const m = gunMuzzle(
           aFire,
           squareHalf,
@@ -662,6 +685,23 @@ export function GameCanvas({
       }
 
       sim.step(dtMs);
+
+      if (inCountdown) {
+        sim.constrainActorToBox(
+          "player",
+          playerSpawnX,
+          playerSpawnY,
+          spawnLockHalf,
+          spawnLockHalf
+        );
+        sim.constrainActorToBox(
+          "ai",
+          aiSpawnX,
+          aiSpawnY,
+          spawnLockHalf,
+          spawnLockHalf
+        );
+      }
 
       const lens = mapConfig.bulletLens;
       if (lens) {
@@ -769,7 +809,7 @@ export function GameCanvas({
           }
         }
 
-        if (dzRun.length > 0) {
+        if (!inCountdown && dzRun.length > 0) {
           const pin = pointInAnyDamageZone(p2.x, p2.y, dzRun);
           if (pin && !playerWasInDz) {
             playerHp -= 1;
@@ -808,7 +848,7 @@ export function GameCanvas({
         }
 
         const hz = mapConfig.healZone;
-        if (hz) {
+        if (!inCountdown && hz) {
           const ph = pointInHealZone(p2.x, p2.y, hz);
           if (ph && !playerWasInHeal) {
             playerHp = Math.min(MAX_HP, playerHp + 1);
@@ -927,6 +967,25 @@ export function GameCanvas({
         ctx.stroke();
       }
       ctx.restore();
+
+      if (inCountdown) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.42)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([7, 6]);
+        for (const [sx, sy] of [
+          [playerSpawnX, playerSpawnY],
+          [aiSpawnX, aiSpawnY],
+        ] as const) {
+          const pA = toS(sx - spawnLockHalf, sy - spawnLockHalf);
+          const pB = toS(sx + spawnLockHalf, sy + spawnLockHalf);
+          const rx = Math.min(pA.x, pB.x);
+          const ry = Math.min(pA.y, pB.y);
+          ctx.strokeRect(rx, ry, Math.abs(pB.x - pA.x), Math.abs(pB.y - pA.y));
+        }
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
 
       const drawSquare = (b: PhysBody, fill: string, stroke: string) => {
         ctx.beginPath();
@@ -1064,7 +1123,25 @@ export function GameCanvas({
         22
       );
 
-      if (playerHp <= 0) {
+      if (inCountdown) {
+        const n = Math.ceil(countdownRemainMs / 1000);
+        ctx.save();
+        ctx.fillStyle = "rgba(0, 0, 0, 0.38)";
+        ctx.fillRect(0, 0, w, h);
+        const fontPx = Math.max(72, Math.min(w, h) * 0.26);
+        ctx.font = `bold ${fontPx}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth = Math.max(5, fontPx * 0.06);
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+        const label = String(n);
+        ctx.strokeText(label, w / 2, h / 2);
+        ctx.fillText(label, w / 2, h / 2);
+        ctx.restore();
+      }
+
+      if (!inCountdown && playerHp <= 0) {
         finishOnce({
           reason: "hp",
           winner: "ai",
@@ -1073,7 +1150,7 @@ export function GameCanvas({
         });
         return;
       }
-      if (aiHp <= 0) {
+      if (!inCountdown && aiHp <= 0) {
         finishOnce({
           reason: "hp",
           winner: "player",
@@ -1082,7 +1159,7 @@ export function GameCanvas({
         });
         return;
       }
-      if (elapsedSession >= SESSION_DURATION_MS) {
+      if (!inCountdown && matchElapsedMs >= SESSION_DURATION_MS) {
         let winner: SessionFinish["winner"] = "draw";
         if (playerHp > aiHp) winner = "player";
         else if (aiHp > playerHp) winner = "ai";

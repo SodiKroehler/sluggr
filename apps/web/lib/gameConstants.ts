@@ -1,6 +1,9 @@
 /** Full match length (ms). Bump for production; keep low for iteration. */
 export const SESSION_DURATION_MS = 180_000;
 
+/** Pre-round lock: players held in spawn boxes while a centered countdown runs (ms). */
+export const ARENA_COUNTDOWN_MS = 5000;
+
 /** Scales horizontal movement force (WASD / AI). */
 export const MOVE_SPEED_MULTIPLIER = 1;
 

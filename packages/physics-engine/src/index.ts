@@ -39,6 +39,14 @@ type SimulationApi = {
   applyForce: (bodyId: string, fx: number, fy: number) => void;
   setAngularVelocity: (bodyId: string, w: number) => void;
   setAngle: (bodyId: string, angle: number) => void;
+  /** Snap actor inside an axis-aligned box (world units); zeros linear/angular velocity. */
+  constrainActorToBox: (
+    bodyId: string,
+    centerX: number,
+    centerY: number,
+    halfExtentX: number,
+    halfExtentY: number
+  ) => void;
   /** Static cube (player-placed; fixed in world). Returns body id or "". */
   placeCube: (x: number, y: number, side: number) => string;
   spawnBullet: (
@@ -241,6 +249,28 @@ export function createSimulation(config: SimulationConfig): SimulationApi {
       const b = idToBody.get(bodyId);
       if (!b) return;
       Matter.Body.setAngle(b, angle);
+      Matter.Body.setAngularVelocity(b, 0);
+    },
+    constrainActorToBox(
+      bodyId: string,
+      centerX: number,
+      centerY: number,
+      halfExtentX: number,
+      halfExtentY: number
+    ) {
+      if (destroyed) return;
+      const b = idToBody.get(bodyId);
+      if (!b) return;
+      const nx = Math.max(
+        centerX - halfExtentX,
+        Math.min(centerX + halfExtentX, b.position.x)
+      );
+      const ny = Math.max(
+        centerY - halfExtentY,
+        Math.min(centerY + halfExtentY, b.position.y)
+      );
+      Matter.Body.setPosition(b, { x: nx, y: ny });
+      Matter.Body.setVelocity(b, { x: 0, y: 0 });
       Matter.Body.setAngularVelocity(b, 0);
     },
     placeCube(x: number, y: number, side: number) {
