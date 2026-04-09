@@ -416,8 +416,9 @@ export default function HomePage() {
             background: "var(--panel)",
           }}
         >
-          Vortex · Ring exit + yellow spiral · R or scroll = new spiral ·
-          Right-click damage tile · RELEASE then fast path · ATTRACT returns to ring
+          Vortex · Click the ring (right side) to start your path · W/D/S first
+          branch, then W/A/S/D · Click junction for attack dot · Release follows
+          the jade path; shockwaves at attacks · Near enemy attack = damage
         </p>
       </div>
     );

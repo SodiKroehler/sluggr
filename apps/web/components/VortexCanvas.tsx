@@ -6,36 +6,48 @@ import {
   type VortexAiSnapshot,
 } from "@locket/ai-brain";
 import {
-  buildFibonacciSpiralPath,
-  cellCenterPx,
-  cellKey,
-  cellsTouchingCircleRing,
   computeVortexLayout,
   launchPathCellsPerSec,
-  manhattan,
-  parseCellKey,
-  pathLerpPx,
-  pixelToCell,
-  randomSpiralVariant,
   ringAttachmentPx,
-  type Cell,
-  type SpiralVariant,
   type VortexLayout,
   type VortexMapTuning,
 } from "@locket/vortex-engine";
+import {
+  ATTACK_RADIUS,
+  cwTangentOnCircle,
+  distSq,
+  drawAttackDot,
+  drawShockwave,
+  firstTierEndpoints,
+  fourTierEndpoints,
+  isValidCircleStart,
+  JADE,
+  JADE_STROKE_PX,
+  PAUSE_AT_ATTACK_MS,
+  polylineCumulativeLengths,
+  positionAtArcLength,
+  projectOntoCircle,
+  SEGMENT_UNIT_PX,
+  SHOCKWAVE_DURATION_MS,
+  SHOCKWAVE_MAX_RADIUS_PX,
+  strokeCandidateBranches,
+  strokePolylineExact,
+  type BranchFirst,
+  type BranchFour,
+  type Vec2,
+} from "@/maps/vortex/pathDrawing";
 import { ARENA_COUNTDOWN_MS } from "@/lib/gameConstants";
 import { useCallback, useEffect, useRef } from "react";
 
 const MAX_HP = 10;
 const STROKE_PX = 2;
 const BG = "#f4f2ee";
-const GRID_LINE = "rgba(0,0,0,0.06)";
-const PATH_HIGHLIGHT = "rgba(230, 200, 60, 0.55)";
-const DAMAGE_PLAYER = "rgba(200, 60, 60, 0.45)";
-const DAMAGE_AI = "rgba(160, 80, 160, 0.4)";
-const RING_HIGHLIGHT = "rgba(80, 120, 200, 0.25)";
+const CIRCLE_HIT_BAND = 14;
+const JUNCTION_CLICK_R = 26;
 const SPRITE_FRAC = 0.85;
 const RELEASE_LABEL_MS = 1400;
+const DAMAGE_COOLDOWN_MS = 520;
+const DAMAGE_NEAR_ATTACK = 1;
 
 export type VortexSessionFinish = {
   winner: "player" | "ai" | "draw";
@@ -46,6 +58,10 @@ export type VortexSessionFinish = {
 
 type SimPhase = "countdown" | "planning" | "released" | "attract";
 
+type PlanMode = "circle" | "branch";
+
+type Shock = { x: number; y: number; t0: number };
+
 type SimState = {
   phase: SimPhase;
   theta: number;
@@ -53,39 +69,47 @@ type SimState = {
   countdownEnd: number;
   matchStart: number;
   layout: VortexLayout;
-  ringKeys: Set<string>;
 
-  playerExit: Cell | null;
-  aiExit: Cell | null;
+  playerMode: PlanMode;
+  playerVerts: Vec2[];
+  playerLastDir: Vec2 | null;
+  playerBranchDepth: number;
+  playerAttackVerts: Set<number>;
+  playerAttackDots: Vec2[];
+
+  aiMode: PlanMode;
+  aiVerts: Vec2[];
+  aiLastDir: Vec2 | null;
+  aiBranchDepth: number;
+  aiAttackVerts: Set<number>;
+  aiAttackDots: Vec2[];
+
   planningEnd: number | null;
 
-  playerPath: Cell[];
-  aiPath: Cell[];
-  playerPathProg: number;
-  aiPathProg: number;
-  playerPathSpeed: number;
-  aiPathSpeed: number;
+  playerAlong: number;
+  aiAlong: number;
+  playerSpeedPx: number;
+  aiSpeedPx: number;
+  playerPauseUntil: number;
+  aiPauseUntil: number;
+  playerProcessedAttackPause: Set<number>;
+  aiProcessedAttackPause: Set<number>;
+  playerShocks: Shock[];
+  aiShocks: Shock[];
 
   playerOnRing: boolean;
   aiOnRing: boolean;
-  playerCell: Cell | null;
-  aiCell: Cell | null;
-  lastPlayerPathIdx: number;
-  lastAiPathIdx: number;
-
-  playerDamage: Set<string>;
-  aiDamage: Set<string>;
 
   playerHp: number;
   aiHp: number;
+  lastPlayerNearAiAttack: number;
+  lastAiNearPlayerAttack: number;
+
   tick: number;
   planningStart: number;
-
   releasedWallAt: number | null;
   attractWallAt: number | null;
-
-  playerVariant: SpiralVariant;
-  aiVariant: SpiralVariant;
+  lastAiAttackToggleTick: number;
 };
 
 type Props = {
@@ -94,16 +118,20 @@ type Props = {
   onSessionEnd: (r: VortexSessionFinish) => void;
 };
 
-function initialSim(layout: VortexLayout, sessionStart: number, tun: VortexMapTuning): SimState {
-  const ringKeys = cellsTouchingCircleRing(layout, STROKE_PX);
+function norm(v: Vec2): Vec2 {
+  const l = Math.hypot(v.x, v.y) || 1;
+  return { x: v.x / l, y: v.y / l };
+}
+
+function aiRingPointFromHint(u: Vec2, layout: VortexLayout): Vec2 {
+  const { cx, cy, R } = layout;
+  let d = norm(u);
+  if (d.x >= -0.03) d = norm({ x: -Math.abs(d.x) - 0.2, y: d.y });
+  return { x: cx + d.x * R, y: cy + d.y * R };
+}
+
+function initialSim(layout: VortexLayout, sessionStart: number): SimState {
   const countdownEnd = sessionStart + ARENA_COUNTDOWN_MS;
-  const defVar = {
-    maxCells: tun.spiralMaxCells,
-    dirOffset: 0,
-    turnSign: 1 as const,
-    mirrorH: false,
-    mirrorV: false,
-  };
   return {
     phase: "countdown",
     theta: 0,
@@ -111,98 +139,102 @@ function initialSim(layout: VortexLayout, sessionStart: number, tun: VortexMapTu
     countdownEnd,
     matchStart: countdownEnd,
     layout,
-    ringKeys,
-    playerExit: null,
-    aiExit: null,
+    playerMode: "circle",
+    playerVerts: [],
+    playerLastDir: null,
+    playerBranchDepth: 0,
+    playerAttackVerts: new Set(),
+    playerAttackDots: [],
+    aiMode: "circle",
+    aiVerts: [],
+    aiLastDir: null,
+    aiBranchDepth: 0,
+    aiAttackVerts: new Set(),
+    aiAttackDots: [],
     planningEnd: null,
-    playerPath: [],
-    aiPath: [],
-    playerPathProg: 0,
-    aiPathProg: 0,
-    playerPathSpeed: 0,
-    aiPathSpeed: 0,
+    playerAlong: 0,
+    aiAlong: 0,
+    playerSpeedPx: 0,
+    aiSpeedPx: 0,
+    playerPauseUntil: 0,
+    aiPauseUntil: 0,
+    playerProcessedAttackPause: new Set(),
+    aiProcessedAttackPause: new Set(),
+    playerShocks: [],
+    aiShocks: [],
     playerOnRing: true,
     aiOnRing: true,
-    playerCell: null,
-    aiCell: null,
-    lastPlayerPathIdx: -1,
-    lastAiPathIdx: -1,
-    playerDamage: new Set(),
-    aiDamage: new Set(),
     playerHp: MAX_HP,
     aiHp: MAX_HP,
+    lastPlayerNearAiAttack: 0,
+    lastAiNearPlayerAttack: 0,
     tick: 0,
     planningStart: countdownEnd,
     releasedWallAt: null,
     attractWallAt: null,
-    playerVariant: defVar,
-    aiVariant: { ...defVar },
+    lastAiAttackToggleTick: -999,
   };
 }
 
 function beginPlanningRound(s: SimState, now: number): void {
   s.phase = "planning";
   s.planningStart = now;
-  s.playerExit = null;
-  s.aiExit = null;
+  s.playerMode = "circle";
+  s.playerVerts = [];
+  s.playerLastDir = null;
+  s.playerBranchDepth = 0;
+  s.playerAttackVerts = new Set();
+  s.playerAttackDots = [];
+  s.aiMode = "circle";
+  s.aiVerts = [];
+  s.aiLastDir = null;
+  s.aiBranchDepth = 0;
+  s.aiAttackVerts = new Set();
+  s.aiAttackDots = [];
   s.planningEnd = null;
-  s.playerPath = [];
-  s.aiPath = [];
-  s.playerPathProg = 0;
-  s.aiPathProg = 0;
-  s.playerPathSpeed = 0;
-  s.aiPathSpeed = 0;
+  s.playerAlong = 0;
+  s.aiAlong = 0;
+  s.playerSpeedPx = 0;
+  s.aiSpeedPx = 0;
+  s.playerPauseUntil = 0;
+  s.aiPauseUntil = 0;
+  s.playerProcessedAttackPause = new Set();
+  s.aiProcessedAttackPause = new Set();
+  s.playerShocks = [];
+  s.aiShocks = [];
   s.playerOnRing = true;
   s.aiOnRing = true;
-  s.playerCell = null;
-  s.aiCell = null;
-  s.lastPlayerPathIdx = -1;
-  s.lastAiPathIdx = -1;
   s.releasedWallAt = null;
   s.attractWallAt = null;
-  s.playerDamage.clear();
-  s.aiDamage.clear();
+  s.lastPlayerNearAiAttack = 0;
+  s.lastAiNearPlayerAttack = 0;
+  s.lastAiAttackToggleTick = -999;
 }
 
-function tryDamage(
-  who: "player" | "ai",
-  entered: Cell,
-  st: SimState,
-  dmg: number
-): void {
-  if (who === "player") {
-    if (!st.playerDamage.has(cellKey(entered))) return;
-    if (st.aiCell && manhattan(st.aiCell, entered) <= 1) {
-      st.aiHp = Math.max(0, st.aiHp - dmg);
-    }
-  } else {
-    if (!st.aiDamage.has(cellKey(entered))) return;
-    if (st.playerCell && manhattan(st.playerCell, entered) <= 1) {
-      st.playerHp = Math.max(0, st.playerHp - dmg);
-    }
+function currentJunction(verts: Vec2[]): Vec2 | null {
+  if (verts.length === 0) return null;
+  return verts[verts.length - 1]!;
+}
+
+function appendBranchPlayer(s: SimState, end: Vec2): void {
+  const j = s.playerVerts.length - 1;
+  const prev = s.playerVerts[j]!;
+  s.playerVerts.push(end);
+  s.playerLastDir = norm({ x: end.x - prev.x, y: end.y - prev.y });
+  s.playerBranchDepth += 1;
+}
+
+function tryStartPlanningTimer(s: SimState, holdMs: number): void {
+  if (s.planningEnd !== null) return;
+  if (s.playerVerts.length >= 2 && s.aiVerts.length >= 2) {
+    s.planningEnd = performance.now() + holdMs;
   }
-}
-
-function rerollPlayerPath(s: SimState, tun: VortexMapTuning): void {
-  if (!s.playerExit) return;
-  s.playerVariant = randomSpiralVariant(Math.random);
-  s.playerVariant.maxCells = Math.min(
-    s.playerVariant.maxCells,
-    tun.spiralMaxCells + 40
-  );
-  s.playerPath = buildFibonacciSpiralPath(
-    s.playerExit,
-    s.layout.cols,
-    s.layout.rows,
-    s.playerVariant
-  );
 }
 
 export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simRef = useRef<SimState | null>(null);
   const endedRef = useRef(false);
-  const hoverCellRef = useRef<Cell | null>(null);
   const tuningRef = useRef(tuning);
   const aiPresetRef = useRef(aiPreset);
   tuningRef.current = tuning;
@@ -225,7 +257,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
     let layout = computeVortexLayout(canvas.clientWidth, canvas.clientHeight, {
       circleFrac: tuningRef.current.circleFrac,
     });
-    simRef.current = initialSim(layout, sessionStart, tuningRef.current);
+    simRef.current = initialSim(layout, sessionStart);
 
     const trebleImg = new Image();
     const bassImg = new Image();
@@ -247,83 +279,144 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         circleFrac: tuningRef.current.circleFrac,
       });
       const s = simRef.current;
-      if (s) {
-        s.layout = layout;
-        s.ringKeys = cellsTouchingCircleRing(layout, STROKE_PX);
-      }
+      if (s) s.layout = layout;
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(canvas.parentElement!);
 
     let lastFrame = performance.now();
-    const PLANNING_MAX_MS = 45_000;
 
-    const onMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const s = simRef.current;
-      if (!s) return;
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      hoverCellRef.current = pixelToCell(s.layout, x, y);
+    const applyPlayerBranchFirst = (s: SimState, k: BranchFirst) => {
+      if (s.playerMode !== "branch" || s.playerVerts.length === 0) return;
+      const j = currentJunction(s.playerVerts)!;
+      const t = cwTangentOnCircle(j, { x: layout.cx, y: layout.cy });
+      const ends = firstTierEndpoints(j, t, SEGMENT_UNIT_PX);
+      const end = ends[k];
+      appendBranchPlayer(s, end);
+      tryStartPlanningTimer(s, tuningRef.current.planningHoldMs);
+    };
+
+    const applyPlayerBranchFour = (s: SimState, k: BranchFour) => {
+      if (s.playerMode !== "branch" || s.playerVerts.length < 2) return;
+      const j = currentJunction(s.playerVerts)!;
+      const prev = s.playerVerts[s.playerVerts.length - 2]!;
+      const incoming = norm({ x: j.x - prev.x, y: j.y - prev.y });
+      const ends = fourTierEndpoints(j, incoming, SEGMENT_UNIT_PX);
+      const end = ends[k];
+      appendBranchPlayer(s, end);
+      tryStartPlanningTimer(s, tuningRef.current.planningHoldMs);
+    };
+
+    const toggleAttackPlayer = (s: SimState) => {
+      if (s.playerMode !== "branch" || s.playerVerts.length === 0) return;
+      const idx = s.playerVerts.length - 1;
+      const j = s.playerVerts[idx]!;
+      if (s.playerAttackVerts.has(idx)) {
+        s.playerAttackVerts.delete(idx);
+        s.playerAttackDots = s.playerAttackDots.filter(
+          (p) => distSq(p, j) > 4
+        );
+      } else {
+        s.playerAttackVerts.add(idx);
+        s.playerAttackDots.push({ ...j });
+      }
+    };
+
+    const applyAiBranch = (s: SimState, first: BranchFirst | null, four: BranchFour | null) => {
+      if (s.aiMode !== "branch" || s.aiVerts.length === 0) return;
+      const j = currentJunction(s.aiVerts)!;
+      let end: Vec2;
+      if (s.aiBranchDepth === 0 && first) {
+        const t = cwTangentOnCircle(j, { x: layout.cx, y: layout.cy });
+        end = firstTierEndpoints(j, t, SEGMENT_UNIT_PX)[first];
+      } else if (four && s.aiVerts.length >= 2) {
+        const prev = s.aiVerts[s.aiVerts.length - 2]!;
+        const incoming = norm({ x: j.x - prev.x, y: j.y - prev.y });
+        end = fourTierEndpoints(j, incoming, SEGMENT_UNIT_PX)[four];
+      } else return;
+      const prevJ = s.aiVerts[s.aiVerts.length - 1]!;
+      s.aiVerts.push(end);
+      s.aiLastDir = norm({ x: end.x - prevJ.x, y: end.y - prevJ.y });
+      s.aiBranchDepth += 1;
+      tryStartPlanningTimer(s, tuningRef.current.planningHoldMs);
+    };
+
+    const toggleAttackAi = (s: SimState) => {
+      if (s.aiMode !== "branch" || s.aiVerts.length === 0) return;
+      const idx = s.aiVerts.length - 1;
+      const j = s.aiVerts[idx]!;
+      if (s.aiAttackVerts.has(idx)) {
+        s.aiAttackVerts.delete(idx);
+        s.aiAttackDots = s.aiAttackDots.filter((p) => distSq(p, j) > 4);
+      } else {
+        s.aiAttackVerts.add(idx);
+        s.aiAttackDots.push({ ...j });
+      }
     };
 
     const onMouseDown = (e: MouseEvent) => {
       const s = simRef.current;
       if (!s || s.phase !== "planning") return;
       const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const cell = pixelToCell(s.layout, x, y);
-      if (!cell) return;
-      const tun = tuningRef.current;
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
 
-      if (e.button === 0) {
-        if (!s.playerExit && s.ringKeys.has(cellKey(cell))) {
-          s.playerExit = cell;
-          s.playerVariant = randomSpiralVariant(Math.random);
-          s.playerVariant.maxCells = Math.min(
-            s.playerVariant.maxCells,
-            tun.spiralMaxCells + 40
-          );
-          s.playerPath = buildFibonacciSpiralPath(
-            cell,
-            s.layout.cols,
-            s.layout.rows,
-            s.playerVariant
-          );
-          if (s.aiExit && s.planningEnd === null) {
-            s.planningEnd = performance.now() + tun.planningHoldMs;
-          }
+      if (s.playerMode === "circle") {
+        const on = projectOntoCircle(px, py, layout, CIRCLE_HIT_BAND);
+        if (on && isValidCircleStart(on, layout, "player")) {
+          s.playerVerts = [on];
+          s.playerLastDir = cwTangentOnCircle(on, { x: layout.cx, y: layout.cy });
+          s.playerMode = "branch";
+          s.playerBranchDepth = 0;
+          tryStartPlanningTimer(s, tuningRef.current.planningHoldMs);
         }
-      } else if (e.button === 2) {
-        e.preventDefault();
-        const k = cellKey(cell);
-        if (s.playerDamage.has(k)) s.playerDamage.delete(k);
-        else s.playerDamage.add(k);
+        return;
+      }
+
+      const jun = currentJunction(s.playerVerts);
+      if (jun && Math.hypot(px - jun.x, py - jun.y) <= JUNCTION_CLICK_R) {
+        toggleAttackPlayer(s);
       }
     };
 
-    const onWheel = (e: WheelEvent) => {
-      const s = simRef.current;
-      if (!s || s.phase !== "planning" || !s.playerExit) return;
-      e.preventDefault();
-      rerollPlayerPath(s, tuningRef.current);
-    };
-
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== "KeyR") return;
       const s = simRef.current;
-      if (!s || s.phase !== "planning" || !s.playerExit) return;
-      e.preventDefault();
-      rerollPlayerPath(s, tuningRef.current);
+      if (!s || s.phase !== "planning" || s.playerMode !== "branch") return;
+      const c = e.code;
+      if (s.playerBranchDepth === 0 && s.playerVerts.length >= 1) {
+        if (c === "KeyW") {
+          e.preventDefault();
+          applyPlayerBranchFirst(s, "w");
+        } else if (c === "KeyD") {
+          e.preventDefault();
+          applyPlayerBranchFirst(s, "d");
+        } else if (c === "KeyS") {
+          e.preventDefault();
+          applyPlayerBranchFirst(s, "s");
+        }
+        return;
+      }
+      if (s.playerBranchDepth >= 1 && s.playerVerts.length >= 2) {
+        if (c === "KeyW") {
+          e.preventDefault();
+          applyPlayerBranchFour(s, "w");
+        } else if (c === "KeyA") {
+          e.preventDefault();
+          applyPlayerBranchFour(s, "a");
+        } else if (c === "KeyS") {
+          e.preventDefault();
+          applyPlayerBranchFour(s, "s");
+        } else if (c === "KeyD") {
+          e.preventDefault();
+          applyPlayerBranchFour(s, "d");
+        }
+      }
     };
 
     const onCtxMenu = (e: MouseEvent) => e.preventDefault();
 
-    canvas.addEventListener("mousemove", onMove);
     canvas.addEventListener("mousedown", onMouseDown);
-    canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("contextmenu", onCtxMenu);
     window.addEventListener("keydown", onKeyDown);
 
@@ -346,6 +439,61 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       }
     };
 
+    const advanceAlongPath = (
+      s: SimState,
+      which: "player" | "ai",
+      now: number,
+      dtSec: number
+    ): Vec2 => {
+      const verts = which === "player" ? s.playerVerts : s.aiVerts;
+      const attacks = which === "player" ? s.playerAttackVerts : s.aiAttackVerts;
+      const shocks = which === "player" ? s.playerShocks : s.aiShocks;
+      const processed =
+        which === "player" ? s.playerProcessedAttackPause : s.aiProcessedAttackPause;
+      let along = which === "player" ? s.playerAlong : s.aiAlong;
+      let pauseUntil = which === "player" ? s.playerPauseUntil : s.aiPauseUntil;
+      const speed = which === "player" ? s.playerSpeedPx : s.aiSpeedPx;
+
+      if (verts.length < 2) return verts[0] ?? { x: layout.cx, y: layout.cy };
+
+      const { cum, total } = polylineCumulativeLengths(verts);
+
+      if (now < pauseUntil) {
+        if (which === "player") s.playerAlong = along;
+        else s.aiAlong = along;
+        return positionAtArcLength(verts, cum, along);
+      }
+
+      let nextAlong = Math.min(total, along + speed * dtSec);
+
+      const hitAttack = [...attacks]
+        .filter((k) => k >= 0 && k < verts.length && !processed.has(k))
+        .map((k) => ({ k, ck: cum[k]! }))
+        .filter(({ ck }) => ck > along && ck <= nextAlong)
+        .sort((a, b) => a.ck - b.ck)[0];
+
+      if (hitAttack) {
+        nextAlong = hitAttack.ck;
+        pauseUntil = now + PAUSE_AT_ATTACK_MS;
+        shocks.push({
+          x: verts[hitAttack.k]!.x,
+          y: verts[hitAttack.k]!.y,
+          t0: now,
+        });
+        processed.add(hitAttack.k);
+      }
+
+      along = nextAlong;
+      if (which === "player") {
+        s.playerAlong = along;
+        s.playerPauseUntil = pauseUntil;
+      } else {
+        s.aiAlong = along;
+        s.aiPauseUntil = pauseUntil;
+      }
+      return positionAtArcLength(verts, cum, along);
+    };
+
     const frame = () => {
       if (endedRef.current) return;
       const s = simRef.current;
@@ -361,6 +509,8 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       layout = s.layout;
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
+      const center = { x: layout.cx, y: layout.cy };
+      const cellSize = layout.cellSize;
 
       if (s.phase === "countdown") {
         if (now >= s.countdownEnd) {
@@ -378,66 +528,40 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       }
 
       if (s.phase === "planning") {
-        const ringList = [...s.ringKeys];
         const snap: VortexAiSnapshot = {
           tick: s.tick,
-          ringCellKeys: ringList,
-          aiExitChosen: !!s.aiExit,
-          playerExitChosen: !!s.playerExit,
-          playerPathKeys: s.playerPath.map(cellKey),
-          aiDamageCount: s.aiDamage.size,
+          aiCirclePlaced: s.aiVerts.length > 0,
+          aiNeedsBranch: s.aiMode === "branch" && s.aiVerts.length > 0,
+          aiBranchDepth: s.aiBranchDepth,
         };
         const intent = decideVortexAi(snap, aiPresetRef.current);
-        if (intent.pickExit && !s.aiExit) {
-          s.aiExit = intent.pickExit;
-          s.aiVariant = randomSpiralVariant(Math.random);
-          s.aiVariant.maxCells = Math.min(
-            s.aiVariant.maxCells,
-            tun.spiralMaxCells + 40
-          );
-          s.aiPath = buildFibonacciSpiralPath(
-            intent.pickExit,
-            layout.cols,
-            layout.rows,
-            s.aiVariant
-          );
-          if (s.playerExit && s.planningEnd === null) {
-            s.planningEnd = now + tun.planningHoldMs;
-          }
+        if (intent.pickCirclePoint && s.aiMode === "circle") {
+          const p = aiRingPointFromHint(intent.pickCirclePoint, layout);
+          s.aiVerts = [p];
+          s.aiLastDir = cwTangentOnCircle(p, center);
+          s.aiMode = "branch";
+          s.aiBranchDepth = 0;
+          tryStartPlanningTimer(s, tun.planningHoldMs);
         }
-        if (intent.setDamageCell) {
-          s.aiDamage.add(cellKey(intent.setDamageCell));
-        }
-
         if (
-          !s.playerExit &&
-          now - s.planningStart > PLANNING_MAX_MS &&
-          s.ringKeys.size > 0
+          intent.addAttackAtJunction &&
+          s.tick - s.lastAiAttackToggleTick > 20
         ) {
-          const keys = [...s.ringKeys];
-          const pick = keys[Math.floor(Math.random() * keys.length)]!;
-          s.playerExit = parseCellKey(pick);
-          s.playerVariant = randomSpiralVariant(Math.random);
-          s.playerVariant.maxCells = Math.min(
-            s.playerVariant.maxCells,
-            tun.spiralMaxCells + 40
-          );
-          s.playerPath = buildFibonacciSpiralPath(
-            s.playerExit,
-            s.layout.cols,
-            s.layout.rows,
-            s.playerVariant
-          );
-          if (s.aiExit && s.planningEnd === null) {
-            s.planningEnd = now + tun.planningHoldMs;
-          }
+          toggleAttackAi(s);
+          s.lastAiAttackToggleTick = s.tick;
+        }
+        if (intent.pickBranchFirst && s.aiBranchDepth === 0) {
+          applyAiBranch(s, intent.pickBranchFirst, null);
+        }
+        if (intent.pickBranchFour && s.aiBranchDepth > 0) {
+          applyAiBranch(s, null, intent.pickBranchFour);
         }
 
         if (
           s.planningEnd !== null &&
           now >= s.planningEnd &&
-          s.playerExit &&
-          s.aiExit
+          s.playerVerts.length >= 2 &&
+          s.aiVerts.length >= 2
         ) {
           s.phase = "released";
           s.releasedWallAt = now;
@@ -448,44 +572,41 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
             tun.launchVelocityMul,
             tun.launchMassKg
           );
-          s.playerPathSpeed = Math.max(4, cps);
-          s.aiPathSpeed = Math.max(4, cps);
+          const vPx = Math.max(180, cps * layout.cellSize);
+          s.playerSpeedPx = vPx;
+          s.aiSpeedPx = vPx;
           s.playerOnRing = false;
           s.aiOnRing = false;
-          s.lastPlayerPathIdx = -1;
-          s.lastAiPathIdx = -1;
-          s.playerPathProg = 0;
-          s.aiPathProg = 0;
-          s.playerCell = s.playerPath[0] ?? s.playerExit;
-          s.aiCell = s.aiPath[0] ?? s.aiExit;
+          s.playerAlong = 0;
+          s.aiAlong = 0;
+          s.playerPauseUntil = 0;
+          s.aiPauseUntil = 0;
+          s.playerProcessedAttackPause = new Set();
+          s.aiProcessedAttackPause = new Set();
+          s.playerShocks = [];
+          s.aiShocks = [];
         }
       }
 
-      if (s.phase === "released" && s.releasedWallAt !== null) {
-        const maxPP = Math.max(0, s.playerPath.length - 1);
-        const maxAP = Math.max(0, s.aiPath.length - 1);
-        s.playerPathProg = Math.min(
-          maxPP,
-          s.playerPathProg + s.playerPathSpeed * dtSec
-        );
-        s.aiPathProg = Math.min(
-          maxAP,
-          s.aiPathProg + s.aiPathSpeed * dtSec
-        );
+      let playerPx: Vec2;
+      let aiPx: Vec2;
 
-        const pi = Math.min(maxPP, Math.floor(s.playerPathProg + 1e-6));
-        const ai = Math.min(maxAP, Math.floor(s.aiPathProg + 1e-6));
-        if (pi !== s.lastPlayerPathIdx && s.playerPath.length > 0) {
-          const entered = s.playerPath[pi]!;
-          s.playerCell = entered;
-          tryDamage("player", entered, s, tun.damageAmount);
-          s.lastPlayerPathIdx = pi;
+      if (s.phase === "released" && s.releasedWallAt !== null) {
+        playerPx = advanceAlongPath(s, "player", now, dtSec);
+        aiPx = advanceAlongPath(s, "ai", now, dtSec);
+
+        const r2 = ATTACK_RADIUS * ATTACK_RADIUS;
+        for (const ap of s.aiAttackDots) {
+          if (distSq(playerPx, ap) <= r2 && now - s.lastPlayerNearAiAttack > DAMAGE_COOLDOWN_MS) {
+            s.playerHp = Math.max(0, s.playerHp - DAMAGE_NEAR_ATTACK);
+            s.lastPlayerNearAiAttack = now;
+          }
         }
-        if (ai !== s.lastAiPathIdx && s.aiPath.length > 0) {
-          const entered = s.aiPath[ai]!;
-          s.aiCell = entered;
-          tryDamage("ai", entered, s, tun.damageAmount);
-          s.lastAiPathIdx = ai;
+        for (const ap of s.playerAttackDots) {
+          if (distSq(aiPx, ap) <= r2 && now - s.lastAiNearPlayerAttack > DAMAGE_COOLDOWN_MS) {
+            s.aiHp = Math.max(0, s.aiHp - DAMAGE_NEAR_ATTACK);
+            s.lastAiNearPlayerAttack = now;
+          }
         }
 
         if (now >= s.releasedWallAt + tun.releasedToAttractMs) {
@@ -493,9 +614,10 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
           s.attractWallAt = now;
           s.playerOnRing = true;
           s.aiOnRing = true;
-          s.playerPathSpeed = 0;
-          s.aiPathSpeed = 0;
         }
+      } else {
+        playerPx = ringAttachmentPx(layout, s.theta, "player");
+        aiPx = ringAttachmentPx(layout, s.theta, "ai");
       }
 
       if (s.phase === "attract" && s.attractWallAt !== null) {
@@ -538,56 +660,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       ctx.fillStyle = BG;
       ctx.fillRect(0, 0, w, h);
 
-      const { cols, rows, cellSize, ox, oy, cx, cy, R } = layout;
-
-      ctx.strokeStyle = GRID_LINE;
-      ctx.lineWidth = 1;
-      for (let c = 0; c <= cols; c++) {
-        const x = ox + c * cellSize;
-        ctx.beginPath();
-        ctx.moveTo(x, oy);
-        ctx.lineTo(x, oy + rows * cellSize);
-        ctx.stroke();
-      }
-      for (let r = 0; r <= rows; r++) {
-        const y = oy + r * cellSize;
-        ctx.beginPath();
-        ctx.moveTo(ox, y);
-        ctx.lineTo(ox + cols * cellSize, y);
-        ctx.stroke();
-      }
-
-      const drawCellFill = (cell: Cell, fill: string) => {
-        const x = ox + cell.c * cellSize;
-        const y = oy + cell.r * cellSize;
-        ctx.fillStyle = fill;
-        ctx.fillRect(x + 0.5, y + 0.5, cellSize - 1, cellSize - 1);
-      };
-
-      for (const k of s.playerDamage) {
-        drawCellFill(parseCellKey(k), DAMAGE_PLAYER);
-      }
-      for (const k of s.aiDamage) {
-        drawCellFill(parseCellKey(k), DAMAGE_AI);
-      }
-
-      if (s.phase === "planning" && s.playerPath.length > 0) {
-        for (const c of s.playerPath) {
-          drawCellFill(c, PATH_HIGHLIGHT);
-        }
-      }
-
-      const blink = s.phase === "planning" && Math.sin(now / 120) > 0;
-      const hc = hoverCellRef.current;
-      if (
-        blink &&
-        hc &&
-        s.phase === "planning" &&
-        s.ringKeys.has(cellKey(hc)) &&
-        !s.playerExit
-      ) {
-        drawCellFill(hc, RING_HIGHLIGHT);
-      }
+      const { cx, cy, R } = layout;
 
       ctx.beginPath();
       ctx.arc(cx, cy, R, 0, Math.PI * 2);
@@ -595,29 +668,88 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       ctx.lineWidth = STROKE_PX;
       ctx.stroke();
 
-      const pp = ringAttachmentPx(layout, s.theta, "player");
-      const ap = ringAttachmentPx(layout, s.theta, "ai");
+      if (s.phase === "planning") {
+        if (s.playerVerts.length >= 2) {
+          strokePolylineExact(ctx, s.playerVerts, {
+            strokePx: JADE_STROKE_PX,
+            color: JADE,
+            glow: true,
+          });
+        }
+        if (s.playerMode === "branch" && s.playerVerts.length > 0) {
+          const j = currentJunction(s.playerVerts)!;
+          const L = SEGMENT_UNIT_PX;
+          if (s.playerBranchDepth === 0) {
+            const t = cwTangentOnCircle(j, center);
+            const ends = firstTierEndpoints(j, t, L);
+            strokeCandidateBranches(ctx, j, [ends.w, ends.d, ends.s]);
+          } else if (s.playerVerts.length >= 2) {
+            const prev = s.playerVerts[s.playerVerts.length - 2]!;
+            const incoming = norm({ x: j.x - prev.x, y: j.y - prev.y });
+            const e = fourTierEndpoints(j, incoming, L);
+            strokeCandidateBranches(ctx, j, [e.w, e.a, e.s, e.d]);
+          }
+        }
 
-      let playerPx: { x: number; y: number };
-      let aiPx: { x: number; y: number };
-      if (s.playerOnRing) {
-        playerPx = pp;
-      } else if (s.phase === "released" && s.playerPath.length > 0) {
-        playerPx = pathLerpPx(layout, s.playerPath, s.playerPathProg);
-      } else if (s.playerCell) {
-        playerPx = cellCenterPx(layout, s.playerCell);
-      } else {
-        playerPx = pp;
+        if (s.aiVerts.length >= 2) {
+          strokePolylineExact(ctx, s.aiVerts, {
+            strokePx: 3,
+            color: "rgba(120, 90, 140, 0.75)",
+            glow: false,
+          });
+        }
+        if (s.aiMode === "branch" && s.aiVerts.length > 0) {
+          const j = currentJunction(s.aiVerts)!;
+          const L = SEGMENT_UNIT_PX;
+          if (s.aiBranchDepth === 0) {
+            const t = cwTangentOnCircle(j, center);
+            const ends = firstTierEndpoints(j, t, L);
+            strokeCandidateBranches(ctx, j, [ends.w, ends.d, ends.s], "rgba(120, 90, 140, 0.35)");
+          } else if (s.aiVerts.length >= 2) {
+            const prev = s.aiVerts[s.aiVerts.length - 2]!;
+            const incoming = norm({ x: j.x - prev.x, y: j.y - prev.y });
+            const e = fourTierEndpoints(j, incoming, L);
+            strokeCandidateBranches(ctx, j, [e.w, e.a, e.s, e.d], "rgba(120, 90, 140, 0.35)");
+          }
+        }
+
+        for (const p of s.playerAttackDots) {
+          drawAttackDot(ctx, p, "rgba(200, 60, 60, 0.95)", 4);
+        }
+        for (const p of s.aiAttackDots) {
+          drawAttackDot(ctx, p, "rgba(90, 60, 140, 0.95)", 4);
+        }
       }
 
-      if (s.aiOnRing) {
-        aiPx = ap;
-      } else if (s.phase === "released" && s.aiPath.length > 0) {
-        aiPx = pathLerpPx(layout, s.aiPath, s.aiPathProg);
-      } else if (s.aiCell) {
-        aiPx = cellCenterPx(layout, s.aiCell);
-      } else {
-        aiPx = ap;
+      if (s.phase === "released") {
+        if (s.playerVerts.length >= 2) {
+          strokePolylineExact(ctx, s.playerVerts, {
+            strokePx: JADE_STROKE_PX,
+            color: JADE,
+            glow: true,
+          });
+        }
+        if (s.aiVerts.length >= 2) {
+          strokePolylineExact(ctx, s.aiVerts, {
+            strokePx: 3,
+            color: "rgba(120, 90, 140, 0.75)",
+            glow: false,
+          });
+        }
+        for (const p of s.playerAttackDots) {
+          drawAttackDot(ctx, p, "rgba(200, 60, 60, 0.85)", 4);
+        }
+        for (const p of s.aiAttackDots) {
+          drawAttackDot(ctx, p, "rgba(90, 60, 140, 0.85)", 4);
+        }
+
+        const tShock = (sh: Shock) => {
+          const u = (now - sh.t0) / SHOCKWAVE_DURATION_MS;
+          if (u >= 1) return;
+          drawShockwave(ctx, { x: sh.x, y: sh.y }, u, SHOCKWAVE_MAX_RADIUS_PX);
+        };
+        s.playerShocks.forEach(tShock);
+        s.aiShocks.forEach(tShock);
       }
 
       drawSprite(trebleImg, playerPx.x, playerPx.y, cellSize);
@@ -646,8 +778,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         s.releasedWallAt !== null &&
         now < s.releasedWallAt + RELEASE_LABEL_MS
       ) {
-        const flash = Math.sin(now / 100) > 0;
-        if (flash) {
+        if (Math.sin(now / 100) > 0) {
           ctx.font = `bold ${Math.max(28, Math.min(w, h) * 0.07)}px system-ui, sans-serif`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
@@ -660,8 +791,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       }
 
       if (s.phase === "attract") {
-        const flash = Math.sin(now / 120) > 0;
-        if (flash) {
+        if (Math.sin(now / 120) > 0) {
           ctx.font = `bold ${Math.max(28, Math.min(w, h) * 0.07)}px system-ui, sans-serif`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
@@ -700,13 +830,13 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         0,
         tun.matchDurationMs - Math.max(0, now - s.matchStart)
       );
-      const mm = Math.floor(leftMs / 60000);
-      const ss = Math.floor((leftMs % 60000) / 1000);
       ctx.fillStyle = "rgba(0,0,0,0.5)";
       ctx.font = "12px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(
-        `${mm}:${ss.toString().padStart(2, "0")}`,
+        `${Math.floor(leftMs / 60000)}:${Math.floor((leftMs % 60000) / 1000)
+          .toString()
+          .padStart(2, "0")}`,
         w / 2,
         16
       );
@@ -719,9 +849,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
-      canvas.removeEventListener("mousemove", onMove);
       canvas.removeEventListener("mousedown", onMouseDown);
-      canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onCtxMenu);
       window.removeEventListener("keydown", onKeyDown);
     };

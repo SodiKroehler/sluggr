@@ -13,9 +13,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.json"
   },
-  "dependencies": {
-    "@locket/vortex-engine": "*"
-  },
   "devDependencies": {
     "typescript": "^5.7.2"
   }

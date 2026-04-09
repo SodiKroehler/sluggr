@@ -1,33 +1,30 @@
-import type { Cell } from "@locket/vortex-engine";
-
 export type AiTrainingPreset = "easy" | "medium" | "hard";
+
+export type Vec2 = { x: number; y: number };
 
 export type VortexAiSnapshot = {
   tick: number;
-  /** Ring cells the AI may choose as exit. */
-  ringCellKeys: string[];
-  aiExitChosen: boolean;
-  playerExitChosen: boolean;
-  /** Keys on player's highlighted path (for damage placement). */
-  playerPathKeys: string[];
-  aiDamageCount: number;
+  /** AI has placed first point on circle. */
+  aiCirclePlaced: boolean;
+  /** AI is at a branch junction (needs W/A/S/D). */
+  aiNeedsBranch: boolean;
+  /** 0 = first 3-way (W/D/S), else 4-way. */
+  aiBranchDepth: number;
 };
 
 export type VortexAiIntent = {
-  /** Pick this ring cell as AI exit (once). */
-  pickExit: Cell | null;
-  /** Mark a cell as AI damage tile (right-click analogue). */
-  setDamageCell: Cell | null;
+  /** Pick a point on AI-allowed semicircle (once). */
+  pickCirclePoint: Vec2 | null;
+  /** First-tier branch. */
+  pickBranchFirst: "w" | "d" | "s" | null;
+  /** Four-way branch. */
+  pickBranchFour: "w" | "a" | "s" | "d" | null;
+  /** Mark attack at current junction. */
+  addAttackAtJunction: boolean;
 };
 
-function pick<T>(arr: T[], rnd: () => number): T | null {
-  if (arr.length === 0) return null;
+function pick<T>(arr: readonly T[], rnd: () => number): T {
   return arr[Math.floor(rnd() * arr.length)]!;
-}
-
-function keyToCell(k: string): Cell {
-  const [c, r] = k.split(",").map(Number);
-  return { c: c!, r: r! };
 }
 
 /**
@@ -38,25 +35,49 @@ export function decideVortexAi(
   preset: AiTrainingPreset,
   rnd: () => number = Math.random
 ): VortexAiIntent {
-  const ringCells = snapshot.ringCellKeys.map(keyToCell);
+  const none = (): VortexAiIntent => ({
+    pickCirclePoint: null,
+    pickBranchFirst: null,
+    pickBranchFour: null,
+    addAttackAtJunction: false,
+  });
 
-  if (!snapshot.aiExitChosen && ringCells.length > 0) {
-    let delay = 45;
-    if (preset === "medium") delay = 28;
-    if (preset === "hard") delay = 12;
-    if (snapshot.tick >= delay) {
-      const cell = pick(ringCells, rnd);
-      return { pickExit: cell, setDamageCell: null };
-    }
+  if (!snapshot.aiCirclePlaced) {
+    let delay = 55;
+    if (preset === "medium") delay = 32;
+    if (preset === "hard") delay = 14;
+    if (snapshot.tick < delay) return none();
+    const t = rnd() * Math.PI - Math.PI / 2;
+    const x = -Math.cos(t) * 0.85;
+    const y = Math.sin(t) * 0.95;
+    return {
+      pickCirclePoint: { x, y },
+      pickBranchFirst: null,
+      pickBranchFour: null,
+      addAttackAtJunction: false,
+    };
   }
 
-  if (snapshot.aiExitChosen && snapshot.playerPathKeys.length > 0) {
-    const maxTraps = preset === "easy" ? 1 : preset === "medium" ? 2 : 3;
-    if (snapshot.aiDamageCount < maxTraps && snapshot.tick % 22 === 7) {
-      const k = pick(snapshot.playerPathKeys, rnd);
-      if (k) return { pickExit: null, setDamageCell: keyToCell(k) };
+  if (snapshot.aiNeedsBranch) {
+    if (snapshot.aiBranchDepth === 0) {
+      const keys = ["w", "d", "s"] as const;
+      if (snapshot.tick % 8 !== 0) return none();
+      return {
+        pickCirclePoint: null,
+        pickBranchFirst: pick(keys, rnd),
+        pickBranchFour: null,
+        addAttackAtJunction: rnd() < (preset === "hard" ? 0.22 : 0.12),
+      };
     }
+    const keys4 = ["w", "a", "s", "d"] as const;
+    if (snapshot.tick % 7 !== 0) return none();
+    return {
+      pickCirclePoint: null,
+      pickBranchFirst: null,
+      pickBranchFour: pick(keys4, rnd),
+      addAttackAtJunction: rnd() < (preset === "hard" ? 0.2 : 0.1),
+    };
   }
 
-  return { pickExit: null, setDamageCell: null };
+  return none();
 }
