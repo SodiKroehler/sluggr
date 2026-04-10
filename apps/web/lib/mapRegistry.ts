@@ -1,5 +1,6 @@
 import type { VortexMapTuning } from "@locket/vortex-engine";
 import { DEFAULT_VORTEX_TUNING } from "@locket/vortex-engine";
+import { SESSION_DURATION_MS } from "./gameConstants";
 
 export type MapId = "vortex";
 
@@ -15,7 +16,10 @@ export const MAPS: Record<MapId, MapDefinition> = {
     id: "vortex",
     label: "Vortex",
     description: "Spinning ring, spiral paths, and trap squares.",
-    tuning: { ...DEFAULT_VORTEX_TUNING },
+    tuning: {
+      ...DEFAULT_VORTEX_TUNING,
+      matchDurationMs: SESSION_DURATION_MS,
+    },
   },
 };
 

@@ -272,10 +272,6 @@ export type VortexMapTuning = {
   launchVelocityMul: number;
   /** Nominal “rim” mass for launch feel (arbitrary units). */
   launchMassKg: number;
-  /** Ms after launch before ATTRACT phase. */
-  releasedToAttractMs: number;
-  /** Ms to show ATTRACT before next planning round. */
-  attractDurationMs: number;
 };
 
 export const DEFAULT_VORTEX_TUNING: VortexMapTuning = {
@@ -287,6 +283,4 @@ export const DEFAULT_VORTEX_TUNING: VortexMapTuning = {
   matchDurationMs: 180_000,
   launchVelocityMul: 9,
   launchMassKg: 2.2,
-  releasedToAttractMs: 5000,
-  attractDurationMs: 1600,
 };

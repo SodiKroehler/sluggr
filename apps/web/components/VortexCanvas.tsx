@@ -40,7 +40,11 @@ import {
   type SplatterBlob,
   type Vec2,
 } from "@/maps/vortex/pathDrawing";
-import { ARENA_COUNTDOWN_MS } from "@/lib/gameConstants";
+import {
+  ARENA_COUNTDOWN_MS,
+  ATTRACT_PHASE_MS,
+  RELEASE_PHASE_MS,
+} from "@/lib/gameConstants";
 import { useCallback, useEffect, useRef } from "react";
 
 const MAX_HP = 10;
@@ -640,7 +644,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
           }
         }
 
-        if (now >= s.releasedWallAt + tun.releasedToAttractMs) {
+        if (now >= s.releasedWallAt + RELEASE_PHASE_MS) {
           s.phase = "attract";
           s.attractWallAt = now;
           s.playerOnRing = true;
@@ -652,7 +656,7 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       }
 
       if (s.phase === "attract" && s.attractWallAt !== null) {
-        if (now >= s.attractWallAt + tun.attractDurationMs) {
+        if (now >= s.attractWallAt + ATTRACT_PHASE_MS) {
           beginPlanningRound(s, now);
         }
       }

@@ -7,7 +7,7 @@ import type { VortexLayout } from "@locket/vortex-engine";
 export type Vec2 = { x: number; y: number };
 
 /** Length of each straight segment (px). */
-export const SEGMENT_UNIT_PX = 44;
+export const SEGMENT_UNIT_PX = 100;
 
 /** Proximity for player vs AI attack dots (px). */
 export const ATTACK_RADIUS = 32;
