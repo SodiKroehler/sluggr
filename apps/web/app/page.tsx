@@ -416,9 +416,9 @@ export default function HomePage() {
             background: "var(--panel)",
           }}
         >
-          Vortex · Click the ring (right side) to start your path · W/D/S first
-          branch, then W/A/S/D · Click junction for attack dot · Release follows
-          the jade path; shockwaves at attacks · Near enemy attack = damage
+          Vortex · Click the ring (right side) to start · W/D/S then W/A/S/D · R
+          or click junction for attack dot · Release follows the jade path;
+          shockwaves at attacks · Near enemy attack = damage
         </p>
       </div>
     );

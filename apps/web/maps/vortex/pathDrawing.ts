@@ -264,4 +264,55 @@ export function drawShockwave(
   ctx.restore();
 }
 
+export type SplatterBlob = {
+  x: number;
+  y: number;
+  rx: number;
+  ry: number;
+  rot: number;
+  fill: string;
+};
+
+/** Irregular paint splatter; call once per hit, draw every frame with drawSplatterBlobs. */
+export function createRandomSplatter(cx: number, cy: number): SplatterBlob[] {
+  const baseHue = Math.random() * 360;
+  const n = 7 + Math.floor(Math.random() * 7);
+  const out: SplatterBlob[] = [];
+  for (let i = 0; i < n; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = Math.random() * 24;
+    const dh = (Math.random() - 0.5) * 50;
+    const alpha = 0.32 + Math.random() * 0.38;
+    out.push({
+      x: cx + Math.cos(ang) * dist,
+      y: cy + Math.sin(ang) * dist,
+      rx: 4 + Math.random() * 18,
+      ry: 3 + Math.random() * 14,
+      rot: Math.random() * Math.PI,
+      fill: `hsla(${(baseHue + dh + 360) % 360}, 70%, 48%, ${alpha})`,
+    });
+  }
+  return out;
+}
+
+export function drawSplatterBlobs(
+  ctx: CanvasRenderingContext2D,
+  blobs: readonly SplatterBlob[]
+): void {
+  if (blobs.length === 0) return;
+  ctx.save();
+  for (const b of blobs) {
+    ctx.fillStyle = b.fill;
+    ctx.beginPath();
+    ctx.ellipse(b.x, b.y, b.rx, b.ry, b.rot, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+export function randomFrozenPathColor(): string {
+  const h = Math.floor(Math.random() * 360);
+  return `hsla(${h}, 52%, 48%, 0.24)`;
+}
+
 export { JADE };

@@ -43,9 +43,9 @@ export function decideVortexAi(
   });
 
   if (!snapshot.aiCirclePlaced) {
-    let delay = 55;
-    if (preset === "medium") delay = 32;
-    if (preset === "hard") delay = 14;
+    let delay = 110;
+    if (preset === "medium") delay = 72;
+    if (preset === "hard") delay = 38;
     if (snapshot.tick < delay) return none();
     const t = rnd() * Math.PI - Math.PI / 2;
     const x = -Math.cos(t) * 0.85;
@@ -61,7 +61,7 @@ export function decideVortexAi(
   if (snapshot.aiNeedsBranch) {
     if (snapshot.aiBranchDepth === 0) {
       const keys = ["w", "d", "s"] as const;
-      if (snapshot.tick % 8 !== 0) return none();
+      if (snapshot.tick % 22 !== 0) return none();
       return {
         pickCirclePoint: null,
         pickBranchFirst: pick(keys, rnd),
@@ -70,7 +70,7 @@ export function decideVortexAi(
       };
     }
     const keys4 = ["w", "a", "s", "d"] as const;
-    if (snapshot.tick % 7 !== 0) return none();
+    if (snapshot.tick % 20 !== 0) return none();
     return {
       pickCirclePoint: null,
       pickBranchFirst: null,

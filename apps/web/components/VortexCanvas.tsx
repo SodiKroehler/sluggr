@@ -14,10 +14,12 @@ import {
 } from "@locket/vortex-engine";
 import {
   ATTACK_RADIUS,
+  createRandomSplatter,
   cwTangentOnCircle,
   distSq,
   drawAttackDot,
   drawShockwave,
+  drawSplatterBlobs,
   firstTierEndpoints,
   fourTierEndpoints,
   isValidCircleStart,
@@ -27,6 +29,7 @@ import {
   polylineCumulativeLengths,
   positionAtArcLength,
   projectOntoCircle,
+  randomFrozenPathColor,
   SEGMENT_UNIT_PX,
   SHOCKWAVE_DURATION_MS,
   SHOCKWAVE_MAX_RADIUS_PX,
@@ -34,6 +37,7 @@ import {
   strokePolylineExact,
   type BranchFirst,
   type BranchFour,
+  type SplatterBlob,
   type Vec2,
 } from "@/maps/vortex/pathDrawing";
 import { ARENA_COUNTDOWN_MS } from "@/lib/gameConstants";
@@ -61,6 +65,8 @@ type SimPhase = "countdown" | "planning" | "released" | "attract";
 type PlanMode = "circle" | "branch";
 
 type Shock = { x: number; y: number; t0: number };
+
+type FrozenPath = { verts: Vec2[]; color: string };
 
 type SimState = {
   phase: SimPhase;
@@ -110,6 +116,11 @@ type SimState = {
   releasedWallAt: number | null;
   attractWallAt: number | null;
   lastAiAttackToggleTick: number;
+
+  /** Ghost trails from past planning rounds (screen space). */
+  frozenPaths: FrozenPath[];
+  /** Persistent splatter from damage hits. */
+  splatters: SplatterBlob[];
 };
 
 type Props = {
@@ -173,6 +184,8 @@ function initialSim(layout: VortexLayout, sessionStart: number): SimState {
     releasedWallAt: null,
     attractWallAt: null,
     lastAiAttackToggleTick: -999,
+    frozenPaths: [],
+    splatters: [],
   };
 }
 
@@ -209,6 +222,7 @@ function beginPlanningRound(s: SimState, now: number): void {
   s.lastPlayerNearAiAttack = 0;
   s.lastAiNearPlayerAttack = 0;
   s.lastAiAttackToggleTick = -999;
+  // frozenPaths + splatters persist across rounds
 }
 
 function currentJunction(verts: Vec2[]): Vec2 | null {
@@ -384,6 +398,11 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       const s = simRef.current;
       if (!s || s.phase !== "planning" || s.playerMode !== "branch") return;
       const c = e.code;
+      if (c === "KeyR") {
+        e.preventDefault();
+        toggleAttackPlayer(s);
+        return;
+      }
       if (s.playerBranchDepth === 0 && s.playerVerts.length >= 1) {
         if (c === "KeyW") {
           e.preventDefault();
@@ -563,6 +582,16 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
           s.playerVerts.length >= 2 &&
           s.aiVerts.length >= 2
         ) {
+          s.frozenPaths.push(
+            {
+              verts: s.playerVerts.map((v) => ({ ...v })),
+              color: randomFrozenPathColor(),
+            },
+            {
+              verts: s.aiVerts.map((v) => ({ ...v })),
+              color: randomFrozenPathColor(),
+            }
+          );
           s.phase = "released";
           s.releasedWallAt = now;
           const omega = tun.spinRadPerSec;
@@ -600,12 +629,14 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
           if (distSq(playerPx, ap) <= r2 && now - s.lastPlayerNearAiAttack > DAMAGE_COOLDOWN_MS) {
             s.playerHp = Math.max(0, s.playerHp - DAMAGE_NEAR_ATTACK);
             s.lastPlayerNearAiAttack = now;
+            s.splatters.push(...createRandomSplatter(playerPx.x, playerPx.y));
           }
         }
         for (const ap of s.playerAttackDots) {
           if (distSq(aiPx, ap) <= r2 && now - s.lastAiNearPlayerAttack > DAMAGE_COOLDOWN_MS) {
             s.aiHp = Math.max(0, s.aiHp - DAMAGE_NEAR_ATTACK);
             s.lastAiNearPlayerAttack = now;
+            s.splatters.push(...createRandomSplatter(aiPx.x, aiPx.y));
           }
         }
 
@@ -667,6 +698,16 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
       ctx.strokeStyle = "#000";
       ctx.lineWidth = STROKE_PX;
       ctx.stroke();
+
+      for (const fp of s.frozenPaths) {
+        if (fp.verts.length >= 2) {
+          strokePolylineExact(ctx, fp.verts, {
+            strokePx: 4,
+            color: fp.color,
+            glow: false,
+          });
+        }
+      }
 
       if (s.phase === "planning") {
         if (s.playerVerts.length >= 2) {
@@ -751,6 +792,8 @@ export function VortexCanvas({ tuning, aiPreset, onSessionEnd }: Props) {
         s.playerShocks.forEach(tShock);
         s.aiShocks.forEach(tShock);
       }
+
+      drawSplatterBlobs(ctx, s.splatters);
 
       drawSprite(trebleImg, playerPx.x, playerPx.y, cellSize);
       drawSprite(bassImg, aiPx.x, aiPx.y, cellSize);
